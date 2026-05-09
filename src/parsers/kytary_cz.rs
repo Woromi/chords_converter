@@ -75,9 +75,9 @@ impl SongParser for KytaryCzParser {
             title,
             artist,
             source_website: url.to_string(),
-            key: None,      // Grounded in reality: not provided by the site
+            key: None,      // Not provided by the site
             tempo: None,    // Not provided by the site
-            language: None, // UI language != Lyrics language
+            language: None, // Not provided by the site, probably czech
             tuning: None,   // Not provided by the site
             capo,           // Successfully extracted!
             parts,

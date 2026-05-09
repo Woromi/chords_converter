@@ -12,7 +12,7 @@ impl SongPrinter for LatexPrinter {
 
         match &song.language {
             Some(lang) => writeln!(writer, "    lang={{{}}},", lang)?,
-            None => writeln!(writer, "    % lang={{}},")?,
+            None => writeln!(writer, "    % lang={{czech|english}},")?,
         }
         match &song.tempo {
             Some(tempo) => writeln!(writer, "    tem={{{}}},", tempo)?,
@@ -83,6 +83,9 @@ impl SongPrinter for LatexPrinter {
                 let chars: Vec<char> = line.lyrics.chars().collect();
                 let mut line_out = String::new();
                 let mut current_pos = 0;
+                
+                // Track whether we are inside a quote block on this line
+                let mut in_quote = false;
 
                 // Ensure chords are processed left-to-right
                 let mut sorted_chords = line.chords.clone();
@@ -102,7 +105,18 @@ impl SongPrinter for LatexPrinter {
                     // Catch up lyrics cursor to where this chord belongs
                     while current_pos < placed.position {
                         if current_pos < chars.len() {
-                            line_out.push(chars[current_pos]);
+                            let c = chars[current_pos];
+                            if c == '"' {
+                                if !in_quote {
+                                    line_out.push_str("\\enquote{");
+                                    in_quote = true;
+                                } else {
+                                    line_out.push('}');
+                                    in_quote = false;
+                                }
+                            } else {
+                                line_out.push(c);
+                            }
                         } else {
                             // Pad with spaces if chord extends past existing lyrics
                             line_out.push(' ');
@@ -116,8 +130,25 @@ impl SongPrinter for LatexPrinter {
 
                 // Push any remaining lyrics characters after the last chord
                 while current_pos < chars.len() {
-                    line_out.push(chars[current_pos]);
+                    let c = chars[current_pos];
+                    if c == '"' {
+                        if !in_quote {
+                            line_out.push_str("\\enquote{");
+                            in_quote = true;
+                        } else {
+                            line_out.push('}');
+                            in_quote = false;
+                        }
+                    } else {
+                        line_out.push(c);
+                    }
                     current_pos += 1;
+                }
+
+                // Guardrail: If a source line has an unclosed quote, force-close it 
+                // so it doesn't break the LaTeX compilation environment.
+                if in_quote {
+                    line_out.push('}');
                 }
 
                 writeln!(writer, "{}", line_out.trim_end())?;
