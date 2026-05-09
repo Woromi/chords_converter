@@ -37,7 +37,7 @@ async fn main() {
     let args: Vec<String> = env::args().collect();
 
     if args.len() < 2 {
-        eprintln!("Usage: cargo run -- <URL> [OUTPUT_FORMAT]");
+        eprintln!("Usage: chords_converter <URL> [OUTPUT_FORMAT]");
         eprintln!("Output Formats: text, latex, debug (default: text)");
         std::process::exit(1);
     }

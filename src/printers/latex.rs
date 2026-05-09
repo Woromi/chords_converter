@@ -83,7 +83,7 @@ impl SongPrinter for LatexPrinter {
                 let chars: Vec<char> = line.lyrics.chars().collect();
                 let mut line_out = String::new();
                 let mut current_pos = 0;
-                
+
                 // Track whether we are inside a quote block on this line
                 let mut in_quote = false;
 
@@ -124,6 +124,17 @@ impl SongPrinter for LatexPrinter {
                         current_pos += 1;
                     }
 
+                    // --- SPACING RULE CHECK ---
+                    // If the chord lands exactly on a space immediately following a non-space (word),
+                    // inject an extra space before placing the chord.
+                    if placed.position > 0
+                        && placed.position < chars.len()
+                        && !chars[placed.position - 1].is_whitespace()
+                        && chars[placed.position].is_whitespace()
+                    {
+                        line_out.push(' ');
+                    }
+
                     // Inject the inline LaTeX chord
                     line_out.push_str(&format!("\\[{}]", chord_str));
                 }
@@ -145,7 +156,7 @@ impl SongPrinter for LatexPrinter {
                     current_pos += 1;
                 }
 
-                // Guardrail: If a source line has an unclosed quote, force-close it 
+                // Guardrail: If a source line has an unclosed quote, force-close it
                 // so it doesn't break the LaTeX compilation environment.
                 if in_quote {
                     line_out.push('}');
