@@ -1,3 +1,5 @@
+use deunicode::deunicode;
+use heck::ToUpperCamelCase;
 use reqwest::Error;
 use std::env;
 use std::fs::{self, File};
@@ -9,15 +11,19 @@ mod printers;
 
 // Helper to sanitize problematic characters out of filenames
 fn sanitize_filename(name: &str) -> String {
-    name.replace('/', "_")
-        .replace('\\', "_")
-        .replace(':', "_")
-        .replace('?', "_")
-        .replace('*', "_")
-        .replace('"', "_")
-        .replace('<', "_")
-        .replace('>', "_")
-        .replace('|', "_")
+    deunicode(
+        &name
+            .replace('/', "_")
+            .replace('\\', "_")
+            .replace(':', "_")
+            .replace('?', "_")
+            .replace('*', "_")
+            .replace('"', "_")
+            .replace('<', "_")
+            .replace('>', "_")
+            .replace('|', "_")
+            .to_upper_camel_case(),
+    )
 }
 
 async fn fetch_html(url: &str) -> Result<String, Error> {
