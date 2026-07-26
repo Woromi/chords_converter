@@ -19,7 +19,7 @@ pub fn get_printer(format: &str) -> Result<Box<dyn SongPrinter>, String> {
         "text" => Ok(Box::new(text::TextPrinter)),
         "latex" => Ok(Box::new(latex::LatexPrinter)),
         _ => Err(format!(
-            "Unknown format '{}'. Available formats: text, debug",
+            "Unknown format '{}'. Available formats: text, latex, debug",
             format
         )),
     }

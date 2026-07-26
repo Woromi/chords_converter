@@ -29,6 +29,9 @@ impl SongPrinter for TextPrinter {
         if let Some(lang) = &song.language {
             writeln!(writer, "Language: {}", lang)?;
         }
+        for (label, value) in &song.extra {
+            writeln!(writer, "{}: {}", label, value)?;
+        }
         writeln!(writer)?; // Empty line separating metadata from the lyrics
 
         // 3. Iterate through parts
@@ -74,6 +77,13 @@ impl SongPrinter for TextPrinter {
                         current_char_pos += chord_str.chars().count();
                     }
                     writeln!(writer, "{}", chord_line)?;
+
+                    // An instrumental line has no lyrics to print below it;
+                    // an empty line here would split the part in two when the
+                    // output is read back in.
+                    if line.lyrics.is_empty() {
+                        continue;
+                    }
                 }
 
                 writeln!(writer, "{}", line.lyrics)?;

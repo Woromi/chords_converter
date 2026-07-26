@@ -1,6 +1,6 @@
 use super::SongParser;
 use crate::models::{Chord, Line, Part, PartType, PlacedChord, Song};
-use scraper::{ElementRef, Html, Selector, node::Node};
+use scraper::{ElementRef, Html, Selector};
 
 pub struct PisnickyAkordyCzParser;
 
@@ -122,6 +122,7 @@ impl SongParser for PisnickyAkordyCzParser {
             language: None, // Not provided by the site, probably czech
             tuning: None,
             capo: None,
+            extra: Vec::new(),
             parts,
         }
     }

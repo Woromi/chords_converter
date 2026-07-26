@@ -80,6 +80,7 @@ impl SongParser for KytaryCzParser {
             language: None, // Not provided by the site, probably czech
             tuning: None,   // Not provided by the site
             capo,           // Successfully extracted!
+            extra: Vec::new(),
             parts,
         }
     }

@@ -9,6 +9,9 @@ pub struct Song {
     pub language: Option<String>,
     pub tuning: Option<String>,
     pub capo: Option<u8>,
+    /// `Label: value` pairs the source provided that have no field of their
+    /// own (year, album, writers, ...), kept in the order they were read.
+    pub extra: Vec<(String, String)>,
     pub parts: Vec<Part>,
 }
 

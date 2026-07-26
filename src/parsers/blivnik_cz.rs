@@ -135,6 +135,7 @@ impl SongParser for BlivnikCzParser {
             tuning: None,
             key: None,
             capo: None,
+            extra: Vec::new(),
             source_website: url.to_string(),
         }
     }

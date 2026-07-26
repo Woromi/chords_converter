@@ -3,6 +3,7 @@ use crate::models::Song;
 pub mod kytary_cz;
 pub mod blivnik_cz;
 pub mod pisnicky_akody_cz;
+pub mod text;
 
 pub trait SongParser {
     // We now pass the exact link into the parse method
