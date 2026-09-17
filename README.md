@@ -16,6 +16,20 @@ cargo run -- song.txt latex
 cargo run -- - latex
 ```
 
+### Supported websites
+| Site | Notes |
+| --- | --- |
+| `akordy.kytary.cz` | |
+| `pisnicky-akordy.cz` | key |
+| `blivnik.cz` | |
+| `ultimate-guitar.com` | key, capo, tuning, the tabber's opening remark |
+
+Ultimate Guitar keeps the sheet in a JSON blob the page ships for its own
+scripts, not in the HTML, so the parser reads it from there. It also turns away
+anything that does not look like a browser, which is why pages are fetched with
+the headers one sends, a cookie jar and a couple of retries. Should a page still
+come back as a bot check, open it in a browser, save it and pass the saved file.
+
 ### Text input format
 Plain-text songs use the common "chords over lyrics" layout — a line of chords
 positioned above the lyric line it belongs to. The header, `Label: value`

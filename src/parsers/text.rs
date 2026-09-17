@@ -27,120 +27,153 @@ const TAB_WIDTH: usize = 8;
 impl SongParser for TextParser {
     fn parse(&self, source: &str, content: &str) -> Song {
         let content = content.trim_start_matches('\u{feff}');
-        let mut lines: Vec<String> = content.lines().map(expand_tabs).collect();
+        let lines: Vec<String> = content.lines().map(expand_tabs).collect();
 
         let mut header = Header::new(source);
-        let mut idx = parse_header(&lines, &mut header);
+        let idx = parse_header(&lines, &mut header);
 
-        // Body: walk the remaining lines, attaching each chord line to the
-        // lyric line directly beneath it.
-        let mut parts: Vec<Part> = Vec::new();
-        let mut current_type = PartType::Verse;
-        let mut current_lines: Vec<Line> = Vec::new();
+        header.into_song(parse_parts(lines, idx))
+    }
+}
 
-        while idx < lines.len() {
-            let line = lines[idx].clone();
-            let line = line.as_str();
-            let trimmed = line.trim();
+/// Parses a whole "chords over lyrics" body — no header, no metadata — into
+/// parts. The website parsers reach for it once they have stripped their own
+/// markup, their pages using the very same layout underneath.
+pub(super) fn parse_body(content: &str) -> Vec<Part> {
+    parse_parts(content.lines().map(expand_tabs).collect(), 0)
+}
 
-            // A. Blank line: closes the current block, keeps the section type
-            //    so that a multi-stanza chorus stays a chorus.
-            if trimmed.is_empty() {
-                flush_part(&mut parts, &current_type, &mut current_lines);
-                idx += 1;
-                continue;
-            }
+/// Walks the body lines from `idx` on, attaching each chord line to the lyric
+/// line directly beneath it.
+fn parse_parts(mut lines: Vec<String>, mut idx: usize) -> Vec<Part> {
+    let mut parts: Vec<Part> = Vec::new();
+    let mut current_type = PartType::Verse;
+    let mut current_lines: Vec<Line> = Vec::new();
 
-            // B. Bracketed section marker, e.g. "[Chorus]" or "[Verse 2]".
-            if let Some(pt) = parse_bracket_marker(trimmed) {
-                flush_part(&mut parts, &current_type, &mut current_lines);
-                current_type = pt;
-                idx += 1;
-                continue;
-            }
+    while idx < lines.len() {
+        let line = lines[idx].clone();
+        let line = line.as_str();
+        let trimmed = line.trim();
 
-            // C. Inline structural marker, e.g. "R:", "1." (Czech/English).
-            if let Some((pt, rest_at)) = detect_part_type(line) {
-                flush_part(&mut parts, &current_type, &mut current_lines);
-                current_type = pt;
-                let rest = &line[rest_at..];
-                if is_chord_line(rest) {
-                    // "Intro: | C G | Am F |" or "R:  C      G" — blank the
-                    // marker out and read the line again, so the chords keep
-                    // their columns and can still pair with the lyrics below.
-                    let marker_width = line[..rest_at].chars().count();
-                    lines[idx] = " ".repeat(marker_width) + rest;
-                    continue;
-                }
-                if !rest.trim().is_empty() {
-                    current_lines.push(Line {
-                        lyrics: rest.trim().to_string(),
-                        chords: Vec::new(),
-                    });
-                }
-                idx += 1;
-                continue;
-            }
-
-            // D. Chord line: attach it to the lyric line beneath, or keep it as
-            //    an instrumental (chords-only) line when no lyrics follow.
-            if is_chord_line(line) {
-                let chords = parse_chord_line(line);
-                let next = lines.get(idx + 1).map(String::as_str).unwrap_or("");
-                let next_trim = next.trim();
-
-                let follows_lyrics = !next_trim.is_empty()
-                    && !is_chord_line(next)
-                    && parse_bracket_marker(next_trim).is_none();
-
-                if !follows_lyrics {
-                    current_lines.push(Line {
-                        lyrics: decoration_skeleton(line),
-                        chords,
-                    });
-                    idx += 1;
-                    continue;
-                }
-
-                // The lyric line below may carry a marker, as in "1. When I
-                // find myself ...". Drop the marker and shift the chords left
-                // by as many columns, keeping them above the right syllables.
-                let (lyrics, chords) = match detect_part_type(next) {
-                    Some((pt, rest_at)) => {
-                        let rest = next[rest_at..].trim_start();
-                        if rest.is_empty() {
-                            current_lines.push(Line {
-                                lyrics: String::new(),
-                                chords,
-                            });
-                            idx += 1;
-                            continue;
-                        }
-                        flush_part(&mut parts, &current_type, &mut current_lines);
-                        current_type = pt;
-                        let dropped = next[..next.len() - rest.len()].chars().count();
-                        (rest.trim_end().to_string(), shift_chords(chords, dropped))
-                    }
-                    None => (next.trim_end().to_string(), chords),
-                };
-
-                current_lines.push(Line { lyrics, chords });
-                idx += 2;
-                continue;
-            }
-
-            // E. Plain lyric line with no chords above it.
-            current_lines.push(Line {
-                lyrics: line.trim_end().to_string(),
-                chords: Vec::new(),
-            });
+        // A. Blank line: closes the current block, keeps the section type
+        //    so that a multi-stanza chorus stays a chorus.
+        if trimmed.is_empty() {
+            flush_part(&mut parts, &current_type, &mut current_lines);
             idx += 1;
+            continue;
         }
 
-        flush_part(&mut parts, &current_type, &mut current_lines);
+        // B. Bracketed section marker, e.g. "[Chorus]" or "[Verse 2]".
+        if let Some(pt) = parse_bracket_marker(trimmed) {
+            flush_part(&mut parts, &current_type, &mut current_lines);
+            current_type = pt;
+            idx += 1;
+            continue;
+        }
 
-        header.into_song(parts)
+        // C. Inline structural marker, e.g. "R:", "1." (Czech/English).
+        if let Some((pt, rest_at)) = detect_part_type(line) {
+            flush_part(&mut parts, &current_type, &mut current_lines);
+            current_type = pt;
+            let rest = &line[rest_at..];
+            if is_chord_line(rest) {
+                // "Intro: | C G | Am F |" or "R:  C      G" — blank the
+                // marker out and read the line again, so the chords keep
+                // their columns and can still pair with the lyrics below.
+                let marker_width = line[..rest_at].chars().count();
+                lines[idx] = " ".repeat(marker_width) + rest;
+                continue;
+            }
+            if !rest.trim().is_empty() {
+                current_lines.push(Line {
+                    lyrics: rest.trim().to_string(),
+                    chords: Vec::new(),
+                });
+            }
+            idx += 1;
+            continue;
+        }
+
+        // D. Tablature: a run of string lines, taken verbatim into a part of
+        //    its own. Pairing it with the chords above it as though it were
+        //    lyrics would write them into the middle of the staff.
+        if is_tablature_line(line) {
+            flush_part(&mut parts, &current_type, &mut current_lines);
+
+            let mut staff = Vec::new();
+            while idx < lines.len() && is_tablature_line(&lines[idx]) {
+                staff.push(Line {
+                    lyrics: lines[idx].trim_end().to_string(),
+                    chords: Vec::new(),
+                });
+                idx += 1;
+            }
+            parts.push(Part {
+                part_type: PartType::Tab,
+                lines: staff,
+            });
+            continue;
+        }
+
+        // E. Chord line: attach it to the lyric line beneath, or keep it as
+        //    an instrumental (chords-only) line when no lyrics follow.
+        if is_chord_line(line) {
+            let chords = parse_chord_line(line);
+            let next = lines.get(idx + 1).map(String::as_str).unwrap_or("");
+            let next_trim = next.trim();
+
+            let follows_lyrics = !next_trim.is_empty()
+                && !is_chord_line(next)
+                && !is_tablature_line(next)
+                && parse_bracket_marker(next_trim).is_none();
+
+            if !follows_lyrics {
+                current_lines.push(Line {
+                    lyrics: decoration_skeleton(line),
+                    chords,
+                });
+                idx += 1;
+                continue;
+            }
+
+            // The lyric line below may carry a marker, as in "1. When I
+            // find myself ...". Drop the marker and shift the chords left
+            // by as many columns, keeping them above the right syllables.
+            let (lyrics, chords) = match detect_part_type(next) {
+                Some((pt, rest_at)) => {
+                    let rest = next[rest_at..].trim_start();
+                    if rest.is_empty() {
+                        current_lines.push(Line {
+                            lyrics: String::new(),
+                            chords,
+                        });
+                        idx += 1;
+                        continue;
+                    }
+                    flush_part(&mut parts, &current_type, &mut current_lines);
+                    current_type = pt;
+                    let dropped = next[..next.len() - rest.len()].chars().count();
+                    (rest.trim_end().to_string(), shift_chords(chords, dropped))
+                }
+                None => (next.trim_end().to_string(), chords),
+            };
+
+            current_lines.push(Line { lyrics, chords });
+            idx += 2;
+            continue;
+        }
+
+        // F. Plain lyric line with no chords above it.
+        current_lines.push(Line {
+            lyrics: line.trim_end().to_string(),
+            chords: Vec::new(),
+        });
+        idx += 1;
     }
+
+    flush_part(&mut parts, &current_type, &mut current_lines);
+
+    parts
 }
 
 /// Metadata gathered from the header, before the body is parsed.
@@ -470,7 +503,7 @@ fn detect_part_type(line: &str) -> Option<(PartType, usize)> {
 /// (`|`, `x2`, ...) and at least one of them is a real chord.
 fn is_chord_line(line: &str) -> bool {
     let mut chords = 0;
-    for (_, token) in tokenize(line) {
+    for (_, token) in tokenize(without_trailing_remark(line)) {
         if chord_token(token).is_some() {
             chords += 1;
         } else if !is_decoration(token) {
@@ -507,9 +540,11 @@ fn tokenize(line: &str) -> Vec<(usize, &str)> {
 /// "lyrics" so that `| C  G | Am  F |` does not lose its bars.
 fn decoration_skeleton(line: &str) -> String {
     let mut chars: Vec<char> = line.chars().collect();
-    for (col, token) in tokenize(line) {
-        if chord_token(token).is_some() {
-            for c in chars.iter_mut().skip(col).take(token.chars().count()) {
+    for (col, token) in tokenize(without_trailing_remark(line)) {
+        if let Some(chord) = chord_token(token) {
+            let dropped = chord.as_ptr() as usize - token.as_ptr() as usize;
+            let start = col + token[..dropped].chars().count();
+            for c in chars.iter_mut().skip(start).take(chord.chars().count()) {
                 *c = ' ';
             }
         }
@@ -517,15 +552,72 @@ fn decoration_skeleton(line: &str) -> String {
     chars.into_iter().collect::<String>().trim_end().to_string()
 }
 
-/// Unwraps a token from its decoration — "(C)" or "C," — and returns the bare
-/// chord when the token is one.
+/// Unwraps a token from its decoration and returns the bare chord when the
+/// token is one. The result is a slice of `token`, so the caller can still tell
+/// which column the chord itself starts in.
 fn chord_token(token: &str) -> Option<&str> {
-    let mut chord = token;
-    if chord.len() > 2 && chord.starts_with('(') && chord.ends_with(')') {
+    let mut chord = token.trim_end_matches([',', ';', '\'', '"']);
+
+    // A chord in brackets of its own: "(C)".
+    if chord.len() > 2
+        && chord.starts_with('(')
+        && chord.ends_with(')')
+        && is_chord_token(&chord[1..chord.len() - 1])
+    {
         chord = &chord[1..chord.len() - 1];
     }
-    chord = chord.trim_end_matches(',');
+    // Brackets around a whole run of chords, opening and closing on different
+    // tokens: "G (C B7) D". What is left over on this token is not its own.
+    while chord.matches(')').count() > chord.matches('(').count() {
+        chord = chord.strip_suffix(')')?;
+    }
+    while chord.matches('(').count() > chord.matches(')').count() {
+        chord = chord.strip_prefix('(')?;
+    }
+
     (!chord.is_empty() && is_chord_token(chord)).then_some(chord)
+}
+
+/// Recognises one string of an ASCII tablature staff — "e|--7--|--9--|". The
+/// string it is named after may be there or not, but the bar lines and the
+/// frets strung between them have to be.
+fn is_tablature_line(line: &str) -> bool {
+    const FRET_MARKS: &str = "hpbrsxtv/\\~*() .";
+
+    let trimmed = line.trim();
+    let body = match trimmed.split_once('|') {
+        Some((string, body)) if string.chars().count() <= 2 => body,
+        _ => return false,
+    };
+
+    body.chars().filter(|c| *c == '-').count() >= 4
+        && body
+            .chars()
+            .all(|c| c == '-' || c == '|' || c.is_ascii_digit() || FRET_MARKS.contains(c))
+}
+
+/// Cuts off the aside whoever wrote the tab may have left at the end of a
+/// chord line — "(not sure about this one)". Brackets holding nothing but
+/// chords are left alone: there they group a run of chords, as in "G (C B7) D".
+fn without_trailing_remark(line: &str) -> &str {
+    let trimmed = line.trim_end();
+    let open = match trimmed.strip_suffix(')').and_then(|_| trimmed.rfind('(')) {
+        Some(open) => open,
+        None => return line,
+    };
+
+    // The bracket has to open a group of its own. One glued to the token in
+    // front of it belongs to that token, the way the "(7)" of "B(7)" does.
+    if open > 0 && !trimmed[..open].ends_with(char::is_whitespace) {
+        return line;
+    }
+
+    let inside = &trimmed[open + 1..trimmed.len() - 1];
+    let reads_as_chords = tokenize(inside)
+        .into_iter()
+        .all(|(_, token)| chord_token(token).is_some() || is_decoration(token));
+
+    if reads_as_chords { line } else { &line[..open] }
 }
 
 /// Bar lines, repeat marks and repeat counts, all of which may share a line
@@ -603,12 +695,16 @@ fn is_quality_char(c: char) -> bool {
 
 /// Extracts chords and their character column from a chord line.
 fn parse_chord_line(line: &str) -> Vec<PlacedChord> {
-    tokenize(line)
+    tokenize(without_trailing_remark(line))
         .into_iter()
         .filter_map(|(position, token)| {
-            chord_token(token).map(|chord| PlacedChord {
+            let chord = chord_token(token)?;
+            // The token may open with a bracket the chord does not own, so
+            // count what was dropped to keep the column exact.
+            let dropped = chord.as_ptr() as usize - token.as_ptr() as usize;
+            Some(PlacedChord {
                 chord: parse_chord(chord),
-                position,
+                position: position + token[..dropped].chars().count(),
             })
         })
         .collect()
@@ -740,6 +836,21 @@ mod tests {
         let song = parse("one\n\ntwo\n");
 
         assert_eq!(song.parts.len(), 2);
+    }
+
+    #[test]
+    fn a_bracket_belonging_to_the_chord_survives_the_line_end() {
+        let song = parse("Em        B(7)\nthe long way home");
+
+        assert_eq!(chords(&song.parts[0].lines[0]), ["Em", "B(7)"]);
+    }
+
+    #[test]
+    fn an_aside_does_not_turn_a_chord_line_into_lyrics() {
+        let song = parse("Em      D (not sure about this one)\nthe long way home");
+
+        assert_eq!(chords(&song.parts[0].lines[0]), ["Em", "D"]);
+        assert_eq!(columns(&song.parts[0].lines[0]), [0, 8]);
     }
 
     #[test]

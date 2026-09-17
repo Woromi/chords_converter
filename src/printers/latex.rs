@@ -68,8 +68,8 @@ impl SongPrinter for LatexPrinter {
                     "\\endbridge"
                 }
                 PartType::Instrumental => {
-                    writeln!(writer, "\\begin{{instrumental}}")?;
-                    "\\end{instrumental}"
+                    writeln!(writer, "\\begininstrumental")?;
+                    "\\endinstrumental"
                 }
                 PartType::Tab => {
                     writeln!(writer, "\\beginverse*")?;

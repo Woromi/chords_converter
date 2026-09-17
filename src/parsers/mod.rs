@@ -4,6 +4,7 @@ pub mod kytary_cz;
 pub mod blivnik_cz;
 pub mod pisnicky_akody_cz;
 pub mod text;
+pub mod ultimate_guitar_com;
 
 pub trait SongParser {
     // We now pass the exact link into the parse method
@@ -17,6 +18,8 @@ pub fn get_parser(url: &str) -> Result<Box<dyn SongParser>, String> {
         Ok(Box::new(pisnicky_akody_cz::PisnickyAkordyCzParser))
     } else if url.contains("blivnik.cz") {
         Ok(Box::new(blivnik_cz::BlivnikCzParser))
+    } else if url.contains("ultimate-guitar.com") {
+        Ok(Box::new(ultimate_guitar_com::UltimateGuitarComParser))
     } else {
         Err(format!("No parser available for URL: {}", url))
     }
