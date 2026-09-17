@@ -128,11 +128,18 @@ async fn fetch_html(url: &str) -> Result<String, String> {
 
 /// Recognises the interstitials sites put in front of a page instead of
 /// refusing outright, which arrive with a perfectly fine 200.
+///
+/// The signs have to be the interstitial's own. Cloudflare puts its passive
+/// detection script (`/cdn-cgi/challenge-platform/...`) on ordinary pages as
+/// well, so the script alone says nothing about whether the song is there —
+/// taking it for a bot check turned every page of a site into one.
 fn looks_like_a_bot_check(body: &str) -> bool {
-    const SIGNS: [&str; 4] = [
-        "Just a moment...",
+    const SIGNS: [&str; 6] = [
+        "<title>Just a moment...",
         "cf-browser-verification",
-        "challenge-platform",
+        "cf-challenge-running",
+        "id=\"challenge-running\"",
+        "challenge-error-title",
         "Enable JavaScript and cookies to continue",
     ];
 
@@ -141,6 +148,37 @@ fn looks_like_a_bot_check(body: &str) -> bool {
 
 fn is_url(input: &str) -> bool {
     input.starts_with("http://") || input.starts_with("https://")
+}
+
+/// Parses a local file: a page saved from a browser when it is one, the plain
+/// "chords over lyrics" layout otherwise.
+fn parse_file(path: &str, content: &str) -> Song {
+    if !looks_like_html(content) {
+        return parsers::text::TextParser.parse(path, content);
+    }
+
+    match parsers::sniff_parser(content) {
+        Some(parser) => {
+            // A saved page has no address of its own; the one it records is
+            // worth more to the songbook than the path it was saved to.
+            let source = parsers::source_url(content).unwrap_or_else(|| path.to_string());
+            parser.parse(&source, content)
+        }
+        None => {
+            eprintln!(
+                "Warning: '{}' is a web page from a site no parser knows. \
+                 Reading it as plain text.",
+                path
+            );
+            parsers::text::TextParser.parse(path, content)
+        }
+    }
+}
+
+/// Tells a saved page from a song written out as text.
+fn looks_like_html(content: &str) -> bool {
+    let head: String = content.chars().take(2000).collect::<String>().to_lowercase();
+    head.contains("<!doctype html") || head.contains("<html")
 }
 
 /// Reads a pasted song from standard input until EOF (Ctrl-D).
@@ -194,7 +232,7 @@ async fn main() {
     if args.len() < 2 {
         eprintln!("Usage: chords_converter <URL | FILE | -> [OUTPUT_FORMAT]");
         eprintln!("  <URL>   Fetch and parse a supported website");
-        eprintln!("  <FILE>  Parse a local text file (chords over lyrics)");
+        eprintln!("  <FILE>  Parse a local text file (chords over lyrics) or a saved page");
         eprintln!("  -       Read chords from standard input (paste, then Ctrl-D)");
         eprintln!("Output Formats: text, latex, debug (default: text)");
         std::process::exit(1);
@@ -248,7 +286,7 @@ async fn main() {
             std::process::exit(1);
         }
         match fs::read_to_string(input_arg) {
-            Ok(text) => parsers::text::TextParser.parse(input_arg, &text),
+            Ok(text) => parse_file(input_arg, &text),
             Err(e) => {
                 eprintln!("Failed to read file '{}': {}", input_arg, e);
                 std::process::exit(1);

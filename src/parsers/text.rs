@@ -48,6 +48,8 @@ pub(super) fn parse_body(content: &str) -> Vec<Part> {
 fn parse_parts(mut lines: Vec<String>, mut idx: usize) -> Vec<Part> {
     let mut parts: Vec<Part> = Vec::new();
     let mut current_type = PartType::Verse;
+    // Whether a marker said so, or the part is simply the one we default to.
+    let mut named = false;
     let mut current_lines: Vec<Line> = Vec::new();
 
     while idx < lines.len() {
@@ -58,39 +60,30 @@ fn parse_parts(mut lines: Vec<String>, mut idx: usize) -> Vec<Part> {
         // A. Blank line: closes the current block, keeps the section type
         //    so that a multi-stanza chorus stays a chorus.
         if trimmed.is_empty() {
-            flush_part(&mut parts, &current_type, &mut current_lines);
+            flush_part(&mut parts, &current_type, named, &mut current_lines);
             idx += 1;
             continue;
         }
 
         // B. Bracketed section marker, e.g. "[Chorus]" or "[Verse 2]".
         if let Some(pt) = parse_bracket_marker(trimmed) {
-            flush_part(&mut parts, &current_type, &mut current_lines);
+            flush_part(&mut parts, &current_type, named, &mut current_lines);
             current_type = pt;
+            named = true;
             idx += 1;
             continue;
         }
 
         // C. Inline structural marker, e.g. "R:", "1." (Czech/English).
+        //    The marker is blanked out rather than cut off — "Intro: | C G |",
+        //    "R:  C      G" and "1. When I find myself" all keep the columns
+        //    they were written in, so the chords still stand over the right
+        //    syllables and the lines of a part still line up with each other.
         if let Some((pt, rest_at)) = detect_part_type(line) {
-            flush_part(&mut parts, &current_type, &mut current_lines);
+            flush_part(&mut parts, &current_type, named, &mut current_lines);
             current_type = pt;
-            let rest = &line[rest_at..];
-            if is_chord_line(rest) {
-                // "Intro: | C G | Am F |" or "R:  C      G" — blank the
-                // marker out and read the line again, so the chords keep
-                // their columns and can still pair with the lyrics below.
-                let marker_width = line[..rest_at].chars().count();
-                lines[idx] = " ".repeat(marker_width) + rest;
-                continue;
-            }
-            if !rest.trim().is_empty() {
-                current_lines.push(Line {
-                    lyrics: rest.trim().to_string(),
-                    chords: Vec::new(),
-                });
-            }
-            idx += 1;
+            named = true;
+            lines[idx] = blank_out(line, rest_at);
             continue;
         }
 
@@ -98,7 +91,7 @@ fn parse_parts(mut lines: Vec<String>, mut idx: usize) -> Vec<Part> {
         //    its own. Pairing it with the chords above it as though it were
         //    lyrics would write them into the middle of the staff.
         if is_tablature_line(line) {
-            flush_part(&mut parts, &current_type, &mut current_lines);
+            flush_part(&mut parts, &current_type, named, &mut current_lines);
 
             let mut staff = Vec::new();
             while idx < lines.len() && is_tablature_line(&lines[idx]) {
@@ -110,7 +103,7 @@ fn parse_parts(mut lines: Vec<String>, mut idx: usize) -> Vec<Part> {
             }
             parts.push(Part {
                 part_type: PartType::Tab,
-                lines: staff,
+                lines: dedent(staff),
             });
             continue;
         }
@@ -119,12 +112,23 @@ fn parse_parts(mut lines: Vec<String>, mut idx: usize) -> Vec<Part> {
         //    an instrumental (chords-only) line when no lyrics follow.
         if is_chord_line(line) {
             let chords = parse_chord_line(line);
-            let next = lines.get(idx + 1).map(String::as_str).unwrap_or("");
-            let next_trim = next.trim();
 
+            // The lyric line below may carry a marker, as in "1. When I find
+            // myself ...". It opens a part the chords above it already belong
+            // to, so the part is closed here, before they are attached.
+            let mut next = lines.get(idx + 1).cloned().unwrap_or_default();
+            if let Some((pt, rest_at)) = detect_part_type(&next) {
+                flush_part(&mut parts, &current_type, named, &mut current_lines);
+                current_type = pt;
+                named = true;
+                next = blank_out(&next, rest_at);
+                lines[idx + 1] = next.clone();
+            }
+
+            let next_trim = next.trim();
             let follows_lyrics = !next_trim.is_empty()
-                && !is_chord_line(next)
-                && !is_tablature_line(next)
+                && !is_chord_line(&next)
+                && !is_tablature_line(&next)
                 && parse_bracket_marker(next_trim).is_none();
 
             if !follows_lyrics {
@@ -136,29 +140,10 @@ fn parse_parts(mut lines: Vec<String>, mut idx: usize) -> Vec<Part> {
                 continue;
             }
 
-            // The lyric line below may carry a marker, as in "1. When I
-            // find myself ...". Drop the marker and shift the chords left
-            // by as many columns, keeping them above the right syllables.
-            let (lyrics, chords) = match detect_part_type(next) {
-                Some((pt, rest_at)) => {
-                    let rest = next[rest_at..].trim_start();
-                    if rest.is_empty() {
-                        current_lines.push(Line {
-                            lyrics: String::new(),
-                            chords,
-                        });
-                        idx += 1;
-                        continue;
-                    }
-                    flush_part(&mut parts, &current_type, &mut current_lines);
-                    current_type = pt;
-                    let dropped = next[..next.len() - rest.len()].chars().count();
-                    (rest.trim_end().to_string(), shift_chords(chords, dropped))
-                }
-                None => (next.trim_end().to_string(), chords),
-            };
-
-            current_lines.push(Line { lyrics, chords });
+            current_lines.push(Line {
+                lyrics: next.trim_end().to_string(),
+                chords,
+            });
             idx += 2;
             continue;
         }
@@ -171,7 +156,7 @@ fn parse_parts(mut lines: Vec<String>, mut idx: usize) -> Vec<Part> {
         idx += 1;
     }
 
-    flush_part(&mut parts, &current_type, &mut current_lines);
+    flush_part(&mut parts, &current_type, named, &mut current_lines);
 
     parts
 }
@@ -382,24 +367,84 @@ fn match_root(s: &str) -> Option<&'static str> {
     ROOTS.iter().copied().find(|r| s.starts_with(r))
 }
 
-/// Pushes the accumulated lines as a finished part (no-op when empty).
-fn flush_part(parts: &mut Vec<Part>, current_type: &PartType, current_lines: &mut Vec<Line>) {
-    if !current_lines.is_empty() {
-        parts.push(Part {
-            part_type: current_type.clone(),
-            lines: std::mem::take(current_lines),
-        });
-    }
+/// Replaces the first `upto` bytes of a line with as many spaces, which keeps
+/// what follows in the column it was written in.
+fn blank_out(line: &str, upto: usize) -> String {
+    " ".repeat(line[..upto].chars().count()) + &line[upto..]
 }
 
-/// Moves chords `columns` to the left, used when a marker prefix is stripped
-/// off the lyric line underneath them.
-fn shift_chords(chords: Vec<PlacedChord>, columns: usize) -> Vec<PlacedChord> {
-    chords
+/// Pushes the accumulated lines as a finished part (no-op when empty).
+///
+/// A block no marker named, in which not a word is sung, is not the verse we
+/// default to: it is the intro when it opens the song and an instrumental
+/// wherever else it stands.
+fn flush_part(
+    parts: &mut Vec<Part>,
+    current_type: &PartType,
+    named: bool,
+    current_lines: &mut Vec<Line>,
+) {
+    if current_lines.is_empty() {
+        return;
+    }
+
+    let unsung = current_lines.iter().all(is_unsung);
+    let part_type = match !named && unsung {
+        true if parts.is_empty() => PartType::Intro,
+        true => PartType::Instrumental,
+        false => current_type.clone(),
+    };
+
+    parts.push(Part {
+        part_type,
+        lines: dedent(std::mem::take(current_lines)),
+    });
+}
+
+/// A line with nothing to sing — bar lines and repeat marks are all that is
+/// left of it once the chords are taken out.
+fn is_unsung(line: &Line) -> bool {
+    tokenize(&line.lyrics)
         .into_iter()
-        .map(|placed| PlacedChord {
-            position: placed.position.saturating_sub(columns),
-            ..placed
+        .all(|(_, token)| is_decoration(token))
+}
+
+/// Drops the indentation a part shares. Sheets are written with the song
+/// indented — under a "1." that only the first line carries, or simply because
+/// the site drew it that way — and carrying that margin into the songbook
+/// would only offset every line of it. Chords and lyrics move together, so
+/// what stood above what still does.
+fn dedent(lines: Vec<Line>) -> Vec<Line> {
+    let margin = lines
+        .iter()
+        .filter_map(|line| {
+            let written = !line.lyrics.trim().is_empty();
+            let text = written.then(|| line.lyrics.chars().take_while(|c| *c == ' ').count());
+            let chord = line.chords.first().map(|placed| placed.position);
+            match (text, chord) {
+                (Some(text), Some(chord)) => Some(text.min(chord)),
+                (text, chord) => text.or(chord),
+            }
+        })
+        .min()
+        .unwrap_or(0);
+
+    if margin == 0 {
+        return lines;
+    }
+
+    lines
+        .into_iter()
+        .map(|line| Line {
+            lyrics: line.lyrics.chars().skip(margin).collect(),
+            chords: line
+                .chords
+                .into_iter()
+                .map(|placed| PlacedChord {
+                    position: placed.position.saturating_sub(margin),
+                    ..placed
+                })
+                .collect(),
         })
         .collect()
 }
@@ -429,7 +474,12 @@ fn parse_bracket_marker(line: &str) -> Option<PartType> {
     if !(trimmed.starts_with('[') && trimmed.ends_with(']')) {
         return None;
     }
-    let inner = trimmed[1..trimmed.len() - 1].trim().to_lowercase();
+    // "[Intro:]" names the same section as "[Intro]".
+    let inner = trimmed[1..trimmed.len() - 1]
+        .trim()
+        .trim_end_matches(':')
+        .trim()
+        .to_lowercase();
     let base = inner
         .split(|c: char| c.is_whitespace() || c.is_ascii_digit())
         .next()
@@ -450,12 +500,19 @@ fn lookup_marker(keyword: &str) -> Option<PartMarker> {
 
 /// Identifies a structural marker at the start of a line — a keyword ("R",
 /// "Ref", "Chorus", "Sloka 2") or a plain number ("1.", "2)") followed by `:`,
-/// `.`, `)` or the end of the line. Returns the part type together with the
-/// byte offset at which the rest of the line (if any) continues, so that
-/// "1. Some lyrics" keeps its lyrics.
+/// `.`, `)` or the end of the line. A marker may also be written in brackets
+/// of its own, "(1)", "(R)" or "(Ref:)", as Czech songbooks tend to.
+///
+/// Returns the part type together with the byte offset at which the rest of
+/// the line (if any) continues, so that "1. Some lyrics" keeps its lyrics.
 fn detect_part_type(line: &str) -> Option<(PartType, usize)> {
     let indent = line.len() - line.trim_start().len();
-    let body = &line[indent..];
+    let opened = &line[indent..];
+
+    // A bracketed marker has to close its bracket, which is what keeps a
+    // parenthesis the lyrics open — "(ona šla domů)" — from becoming one.
+    let bracketed = opened.starts_with('(');
+    let body = if bracketed { &opened[1..] } else { opened };
 
     // Leading alphabetic run: the keyword.
     let keyword_len = body
@@ -478,25 +535,48 @@ fn detect_part_type(line: &str) -> Option<(PartType, usize)> {
     cursor += digits;
 
     let separator = body[cursor..].chars().next();
-    match separator {
-        Some(':') | Some('.') | Some(')') => cursor += 1,
-        // A marker may also stand alone on its line, e.g. "Intro".
-        None => {}
-        _ => return None,
+    if bracketed {
+        let after = match separator {
+            Some(':') | Some('.') => &body[cursor + 1..],
+            _ => &body[cursor..],
+        };
+        let closed = after.strip_prefix(')')?;
+        cursor = body.len() - closed.len();
+    } else {
+        match separator {
+            Some(':') | Some('.') | Some(')') => cursor += 1,
+            // A marker may also stand alone on its line, e.g. "Intro".
+            None => {}
+            _ => return None,
+        }
     }
 
     let marker = if keyword.is_empty() {
         // A bare number is only a marker when it is numbered and separated,
         // "1." starts a verse but "1973" is just text.
-        if digits == 0 || separator.is_none() {
+        if digits == 0 || (!bracketed && separator.is_none()) {
             return None;
         }
         PartMarker::Verse
     } else {
-        lookup_marker(&keyword)?
+        match lookup_marker(&keyword) {
+            Some(marker) => marker,
+            None if bracketed => bracketed_marker(&keyword)?,
+            None => return None,
+        }
     };
 
-    Some((marker.part_type(), indent + cursor))
+    Some((marker.part_type(), indent + usize::from(bracketed) + cursor))
+}
+
+/// The one-letter markers that are only readable inside brackets. On their own
+/// "S" and "I" are far more likely to be a word of the lyrics than a section.
+fn bracketed_marker(keyword: &str) -> Option<PartMarker> {
+    match keyword {
+        "s" => Some(PartMarker::Verse),
+        "i" => Some(PartMarker::Intro),
+        _ => None,
+    }
 }
 
 /// A line is a chord line when every token is a chord or a decoration
@@ -544,7 +624,19 @@ fn decoration_skeleton(line: &str) -> String {
         if let Some(chord) = chord_token(token) {
             let dropped = chord.as_ptr() as usize - token.as_ptr() as usize;
             let start = col + token[..dropped].chars().count();
-            for c in chars.iter_mut().skip(start).take(chord.chars().count()) {
+            // The chord takes the punctuation it was written with — the commas
+            // of "C, G, Am" — away with it. Left behind, they would read as a
+            // line of lyrics made of stray commas.
+            let tail = &token[dropped + chord.len()..];
+            let punctuation = tail.chars().all(|c| matches!(c, ',' | ';' | '\'' | '"'));
+            let width = chord.chars().count() + if punctuation { tail.chars().count() } else { 0 };
+            for c in chars.iter_mut().skip(start).take(width) {
+                *c = ' ';
+            }
+        } else if token.chars().all(|c| matches!(c, ',' | ';')) {
+            // A comma the chords were strung together with, left on its own
+            // by the spacing of the line.
+            for c in chars.iter_mut().skip(col).take(token.chars().count()) {
                 *c = ' ';
             }
         }
@@ -711,7 +803,9 @@ fn parse_chord_line(line: &str) -> Vec<PlacedChord> {
 }
 
 /// Splits a raw chord string like "D/F#", "C\E" or "C#mi7" into a `Chord`.
-fn parse_chord(s: &str) -> Chord {
+/// The website parsers reach for it wherever their page hands them a chord
+/// as one string, so that "Hmi7/Fis" is read apart the same way everywhere.
+pub(super) fn parse_chord(s: &str) -> Chord {
     let (main_part, bass) = match s.find(is_bass_separator) {
         Some(pos) => {
             let bass = s[pos + 1..].trim();
@@ -862,6 +956,45 @@ mod tests {
         assert_eq!(chords(line), ["C", "G", "Am"]);
         assert_eq!(line.lyrics.matches('|').count(), 3);
         assert!(line.lyrics.ends_with("x2"));
+    }
+
+    #[test]
+    fn a_marker_may_be_written_in_brackets() {
+        let song = parse("(1) When I find myself\n\n(R) Let it be\n\n(I) C  G\n");
+
+        assert!(matches!(song.parts[0].part_type, PartType::Verse));
+        assert_eq!(song.parts[0].lines[0].lyrics, "When I find myself");
+        assert!(matches!(song.parts[1].part_type, PartType::Chorus));
+        assert!(matches!(song.parts[2].part_type, PartType::Intro));
+        assert_eq!(chords(&song.parts[2].lines[0]), ["C", "G"]);
+    }
+
+    #[test]
+    fn a_block_with_nothing_to_sing_is_no_verse() {
+        let song = parse("Dmi\n\nC  G\nLet it be\n\n| C  G | Am | x2\n");
+
+        assert!(matches!(song.parts[0].part_type, PartType::Intro));
+        assert!(matches!(song.parts[1].part_type, PartType::Verse));
+        assert!(matches!(song.parts[2].part_type, PartType::Instrumental));
+    }
+
+    #[test]
+    fn a_bracket_the_lyrics_open_is_no_marker() {
+        let song = parse("(ona šla domů)\n");
+
+        assert!(matches!(song.parts[0].part_type, PartType::Verse));
+        assert_eq!(song.parts[0].lines[0].lyrics, "(ona šla domů)");
+    }
+
+    #[test]
+    fn the_margin_a_part_shares_is_dropped_but_its_alignment_is_not() {
+        let song = parse("      C           G\n1. When I find myself in times\n   of trouble\n");
+        let lines = &song.parts[0].lines;
+
+        assert_eq!(lines[0].lyrics, "When I find myself in times");
+        assert_eq!(columns(&lines[0]), [3, 15]);
+        // The second line was indented as far as the first one's marker.
+        assert_eq!(lines[1].lyrics, "of trouble");
     }
 
     #[test]

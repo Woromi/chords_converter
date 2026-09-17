@@ -1,226 +1,219 @@
 use super::SongParser;
-use crate::models::{Chord, Line, Part, PartType, PlacedChord, Song};
-use scraper::{ElementRef, Html, Selector};
+use super::text::parse_body;
+use crate::models::Song;
+use scraper::{Html, Selector};
 
+/// Parses the chord sheets of pisnicky-akordy.cz.
+///
+/// The song sits in a `<pre>` of its own, written the way a monospaced sheet
+/// is: the chord lines are wrapped in `<el class="aline">` and every chord in
+/// a `<span class="akord">`, but neither takes a column of its own. Reading
+/// the text out of the block therefore gives the plain "chords over lyrics"
+/// layout back, every chord in the column it is played in — which is what the
+/// shared text parser reads.
 pub struct PisnickyAkordyCzParser;
 
 impl SongParser for PisnickyAkordyCzParser {
     fn parse(&self, url: &str, html_content: &str) -> Song {
         let document = Html::parse_document(html_content);
 
-        // 1. Extract Metadata
-        let title_sel = Selector::parse("#songheader h1").unwrap();
-        let artist_sel = Selector::parse("#songheader h2").unwrap();
-        let key_sel = Selector::parse("input#tonina").unwrap();
+        let text_of = |selector: &str| -> Option<String> {
+            let selector = Selector::parse(selector).ok()?;
+            document
+                .select(&selector)
+                .next()
+                .map(|el| el.text().collect::<String>().trim().to_string())
+                .filter(|value| !value.is_empty())
+        };
 
-        let title = document
-            .select(&title_sel)
-            .next()
-            .map(|el| el.text().collect::<String>().trim().to_string())
-            .unwrap_or_else(|| "Unknown Title".to_string());
+        // The sheet keeps every column it was written in — its first line is
+        // a chord line, whose indentation says which syllable the chord sits
+        // over — so only the blank lines around it are trimmed away.
+        let sheet = Selector::parse("#songtext pre")
+            .ok()
+            .and_then(|selector| document.select(&selector).next())
+            .map(|el| el.text().collect::<String>())
+            .map(|sheet| sheet.trim_matches('\n').replace('\u{a0}', " "))
+            .unwrap_or_else(|| {
+                eprintln!("Warning: no song found on {}.", url);
+                String::new()
+            });
 
-        let artist = document
-            .select(&artist_sel)
-            .next()
-            .map(|el| el.text().collect::<String>().trim().to_string())
-            .unwrap_or_else(|| "Unknown Artist".to_string());
-
-        let key = document
-            .select(&key_sel)
-            .next()
+        // The key the sheet is written in; the page keeps it for its own
+        // transposing buttons, which is why it reads it back from a field.
+        let key = Selector::parse("input#tonina")
+            .ok()
+            .and_then(|selector| document.select(&selector).next())
             .and_then(|el| el.value().attr("value"))
-            .map(|s| s.trim().to_string());
-
-        // 2. Extract Parts, Lines, and Chords via DOM walk
-        let mut parts: Vec<Part> = Vec::new();
-        let mut current_lines: Vec<Line> = Vec::new();
-        let mut current_part_type = PartType::Verse; // Default starting assumption
-        let mut pending_chords: Vec<PlacedChord> = Vec::new();
-
-        let pre_sel = Selector::parse("#songtext pre").unwrap();
-
-        if let Some(pre_el) = document.select(&pre_sel).next() {
-            for child in pre_el.children() {
-                // A. If it's an <el> tag, it contains our chords for the next lyrics line
-                if let Some(el) = child.value().as_element() {
-                    if el.name() == "el" {
-                        pending_chords = parse_el_chords(ElementRef::wrap(child).unwrap());
-                    }
-                }
-                // B. If it's a text node, it contains lyrics (possibly multiple lines separated by \n)
-                else if let Some(text_node) = child.value().as_text() {
-                    let lines: Vec<&str> = text_node.split('\n').collect();
-
-                    for raw_line in lines {
-                        let trimmed = raw_line.trim();
-
-                        // Skip purely empty lines unless we have pending chords waiting to attach
-                        if trimmed.is_empty() && pending_chords.is_empty() {
-                            continue;
-                        }
-
-                        let mut clean_lyrics = trimmed;
-
-                        // Check if this line introduces a new part (e.g., "R:", "1.")
-                        if let Some(detected_type) = detect_part_type(clean_lyrics) {
-                            // Flush the previous part if it has accumulated lines
-                            if !current_lines.is_empty() {
-                                parts.push(Part {
-                                    part_type: current_part_type,
-                                    lines: std::mem::take(&mut current_lines),
-                                });
-                            }
-                            current_part_type = detected_type;
-
-                            // Clean the prefix marker (e.g., "R: text" becomes "text")
-                            if let Some(idx) = clean_lyrics.find(|c| c == ':' || c == '.') {
-                                clean_lyrics = clean_lyrics[idx + 1..].trim();
-                            }
-                        }
-
-                        if clean_lyrics.is_empty() && pending_chords.is_empty() {
-                            continue;
-                        }
-
-                        // --- THE FIX: Calculate exactly how many characters were stripped from the left ---
-                        // Measure pointer difference to find the byte offset of where clean_lyrics starts
-                        let byte_offset =
-                            clean_lyrics.as_ptr() as usize - raw_line.as_ptr() as usize;
-                        // Convert that byte slice into an exact Unicode character count
-                        let chars_stripped_from_left = raw_line[..byte_offset].chars().count();
-
-                        // Grab pending chords and shift their positions leftwards
-                        let mut chords_to_attach = std::mem::take(&mut pending_chords);
-                        for pc in &mut chords_to_attach {
-                            // saturating_sub prevents underflow just in case a chord was placed over a stripped marker
-                            pc.position = pc.position.saturating_sub(chars_stripped_from_left);
-                        }
-
-                        current_lines.push(Line {
-                            lyrics: clean_lyrics.to_string(),
-                            chords: chords_to_attach,
-                        });
-                    }
-                }
-            }
-
-            // Flush the final remaining part
-            if !current_lines.is_empty() {
-                parts.push(Part {
-                    part_type: current_part_type,
-                    lines: current_lines,
-                });
-            }
-        }
+            .map(str::trim)
+            .filter(|key| !key.is_empty())
+            .map(str::to_string);
 
         Song {
-            title,
-            artist,
+            title: text_of("#songheader h1").unwrap_or_else(|| "Unknown Title".to_string()),
+            artist: text_of("#songheader h2").unwrap_or_else(|| "Unknown Artist".to_string()),
             source_website: url.to_string(),
             key,
-            tempo: None,
-            language: None, // Not provided by the site, probably czech
-            tuning: None,
-            capo: None,
+            tempo: None,    // Not provided by the site.
+            language: None, // Not provided by the site, probably Czech.
+            tuning: None,   // Not provided by the site.
+            capo: None,     // Not provided by the site.
             extra: Vec::new(),
-            parts,
+            parts: parse_body(&sheet),
         }
     }
 }
 
-/// Walks inside an `<el>` tag to extract chords and calculate exact character offsets.
-fn parse_el_chords(el: ElementRef) -> Vec<PlacedChord> {
-    let mut chords = Vec::new();
-    let mut current_pos = 0;
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::models::{Line, PartType};
 
-    for child in el.children() {
-        if let Some(element) = child.value().as_element() {
-            if element.name() == "span" {
-                let chord_text = ElementRef::wrap(child).unwrap().text().collect::<String>();
-                let trimmed_chord = chord_text.trim();
-
-                if !trimmed_chord.is_empty() {
-                    chords.push(PlacedChord {
-                        chord: parse_chord(trimmed_chord),
-                        position: current_pos,
-                    });
-                    // Advance our visual position index by the length of the chord string
-                    current_pos += chord_text.chars().count();
+    /// Wraps a sheet in the page the site would serve it in. A chord line is
+    /// written as the site writes it, `<el>` and all.
+    fn page(sheet: &str) -> String {
+        let sheet = sheet
+            .lines()
+            .map(|line| match line.strip_prefix('~') {
+                Some(chords) => {
+                    let chords = chords.replace("<", "").replace(">", "");
+                    let mut marked = String::new();
+                    let mut rest = chords.as_str();
+                    while let Some(start) = rest.find(|c: char| !c.is_whitespace()) {
+                        let end = rest[start..]
+                            .find(char::is_whitespace)
+                            .map_or(rest.len(), |i| start + i);
+                        marked.push_str(&rest[..start]);
+                        marked
+                            .push_str(&format!("<span class='akord'>{}</span>", &rest[start..end]));
+                        rest = &rest[end..];
+                    }
+                    marked.push_str(rest);
+                    format!(
+                        "<el class='aline' style='display:inline;'>{}\n</el>",
+                        marked
+                    )
                 }
-            }
-        } else if let Some(text) = child.value().as_text() {
-            // Count whitespace characters to track positional offset
-            let cleaned = text.replace('\n', "");
-            current_pos += cleaned.chars().count();
-        }
+                None => format!("{}\n", line),
+            })
+            .collect::<String>();
+
+        format!(
+            "<html><body><div id=\"songheader\"><h1><a href=\"#\">A Song</a></h1>\
+             <h2><a href=\"#\">A Band</a></h2></div>\
+             <input type=\"hidden\" id=\"tonina\" value=\"A\" />\
+             <div id=\"songtext\"><pre>{}</pre></div></body></html>",
+            sheet
+        )
     }
 
-    chords
-}
-
-/// Splits a raw string like "D/F#" or "C#mi7" into a structured `Chord`.
-fn parse_chord(s: &str) -> Chord {
-    let parts: Vec<&str> = s.split('/').collect();
-    let main_part = parts[0].trim();
-    let bass = parts.get(1).map(|b| b.trim().to_string());
-
-    // Comprehensive list of standard and Czech root nomenclature ordered by descending length
-    // so we always match multi-character roots ("Cis", "C#") before single-character roots ("C").
-    let possible_roots = [
-        "Cis", "Dis", "Fis", "Gis", "Ais", "Ces", "Des", "Fes", "Ges", "C#", "D#", "F#", "G#",
-        "A#", "Cb", "Db", "Eb", "Fb", "Gb", "Ab", "Bb", "Es", "As", "C", "D", "E", "F", "G", "A",
-        "H", "B",
-    ];
-
-    let mut root = main_part
-        .chars()
-        .next()
-        .map(|c| c.to_string())
-        .unwrap_or_default();
-    let mut modifier = None;
-
-    for r in possible_roots {
-        if main_part.starts_with(r) {
-            root = r.to_string();
-            let mod_str = &main_part[r.len()..];
-            if !mod_str.is_empty() {
-                modifier = Some(mod_str.to_string());
-            }
-            break;
-        }
+    fn parse(sheet: &str) -> Song {
+        PisnickyAkordyCzParser.parse("https://pisnicky-akordy.cz/a-band/a-song", &page(sheet))
     }
 
-    Chord {
-        root,
-        modifier,
-        bass,
+    fn chords(line: &Line) -> Vec<(String, usize)> {
+        line.chords
+            .iter()
+            .map(|placed| {
+                let mut name = placed.chord.root.clone();
+                if let Some(modifier) = &placed.chord.modifier {
+                    name.push_str(modifier);
+                }
+                if let Some(bass) = &placed.chord.bass {
+                    name.push('/');
+                    name.push_str(bass);
+                }
+                (name, placed.position)
+            })
+            .collect()
     }
-}
 
-/// Identifies standard Czech/English structural markers at the start of a lyrics line.
-fn detect_part_type(line: &str) -> Option<PartType> {
-    let lower = line.to_lowercase();
+    #[test]
+    fn reads_the_song_and_the_key_off_the_page() {
+        let song = parse("~     Ami\n1. Spatřil jsem kometu, oblohou letěla,");
 
-    if lower.starts_with("r:") || lower.starts_with("ref:") || lower.starts_with("chorus") {
-        Some(PartType::Chorus)
-    } else if lower.starts_with("1.")
-        || lower.starts_with("2.")
-        || lower.starts_with("3.")
-        || lower.starts_with("4.")
-        || lower.starts_with("5.")
-        || lower.starts_with("verse")
-    {
-        Some(PartType::Verse)
-    } else if lower.starts_with("intro") || lower.starts_with("předehra") {
-        Some(PartType::Intro)
-    } else if lower.starts_with("mezihra")
-        || lower.starts_with("bridge")
-        || lower.starts_with("solo")
-    {
-        Some(PartType::Bridge)
-    } else if lower.starts_with("outro") || lower.starts_with("dohra") {
-        Some(PartType::Outro)
-    } else {
-        None
+        assert_eq!(song.title, "A Song");
+        assert_eq!(song.artist, "A Band");
+        assert_eq!(song.key.as_deref(), Some("A"));
+        assert!(matches!(song.parts[0].part_type, PartType::Verse));
+    }
+
+    #[test]
+    fn a_chord_keeps_the_column_it_is_played_in() {
+        let song = parse(
+            "~     Ami            Dmi\n\
+             1. Spatřil jsem kometu, oblohou letěla,\n\
+             ~     C\n   \
+             chtěl jsem jí zazpívat, ona mi zmizela,",
+        );
+
+        let lines = &song.parts[0].lines;
+        assert_eq!(lines[0].lyrics, "Spatřil jsem kometu, oblohou letěla,");
+        // "1. " gave its columns up, but the sheet's own margin went with it.
+        assert_eq!(
+            chords(&lines[0]),
+            [("Ami".to_string(), 2), ("Dmi".to_string(), 17)]
+        );
+        assert_eq!(lines[1].lyrics, "chtěl jsem jí zazpívat, ona mi zmizela,");
+        assert_eq!(chords(&lines[1]), [("C".to_string(), 2)]);
+    }
+
+    #[test]
+    fn czech_chord_names_are_read_apart() {
+        let song = parse("~ Cis  Hmi7  D/Fis\n lyrics");
+        let names: Vec<_> = song.parts[0].lines[0]
+            .chords
+            .iter()
+            .map(|placed| {
+                (
+                    placed.chord.root.clone(),
+                    placed.chord.modifier.clone(),
+                    placed.chord.bass.clone(),
+                )
+            })
+            .collect();
+
+        assert_eq!(
+            names,
+            [
+                ("Cis".to_string(), None, None),
+                ("H".to_string(), Some("mi7".to_string()), None),
+                ("D".to_string(), None, Some("Fis".to_string())),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_blank_line_starts_a_new_stanza() {
+        let song = parse(
+            "~   Ami\n1. Spatřil jsem kometu\n\n\
+             2. Penízky ukryl jsem do hlíny\n\n\
+             ~   Ami             Dmi\nR: O vodě, o trávě, o lese,",
+        );
+
+        assert_eq!(song.parts.len(), 3);
+        assert!(matches!(song.parts[1].part_type, PartType::Verse));
+        assert!(matches!(song.parts[2].part_type, PartType::Chorus));
+        assert_eq!(song.parts[2].lines[0].lyrics, "O vodě, o trávě, o lese,");
+    }
+
+    #[test]
+    fn an_interlude_keeps_its_brackets_and_no_lyrics() {
+        let song = parse("~   Ami\nR: O vodě\n~   ( Dmi E )\n\n2. Penízky");
+
+        let interlude = &song.parts[0].lines[1];
+        assert_eq!(
+            chords(interlude),
+            [("Dmi".to_string(), 2), ("E".to_string(), 6)]
+        );
+        assert_eq!(interlude.lyrics.trim(), "(       )");
+    }
+
+    #[test]
+    fn a_page_carrying_no_song_still_parses() {
+        let song = PisnickyAkordyCzParser.parse("https://pisnicky-akordy.cz/", "<html></html>");
+
+        assert_eq!(song.title, "Unknown Title");
+        assert!(song.parts.is_empty());
     }
 }

@@ -1,121 +1,165 @@
 use super::SongParser;
+use super::text::parse_chord;
 use crate::models::{Chord, Line, Part, PartType, PlacedChord, Song};
 use scraper::{ElementRef, Html, Selector, node::Node};
 
+/// Parses the chord sheets of akordy.kytary.cz.
+///
+/// The sheet is written out as HTML: a `<div class="scs-section">` per part,
+/// carrying the part it is in its `data-type`, a `<div>` per line, and every
+/// chord as a `<span class="scs-chord">` standing right in front of the letter
+/// it is played over. The chord is drawn above the line and takes no column of
+/// its own, so the letters around it keep the columns they are printed in.
 pub struct KytaryCzParser;
 
 impl SongParser for KytaryCzParser {
     fn parse(&self, url: &str, html_content: &str) -> Song {
         let document = Html::parse_document(html_content);
 
-        // Core Selectors
         let title_selector = Selector::parse(".sheet-title").unwrap();
-        let author_selector = Selector::parse(".sheet-author u").unwrap();
+        let author_selector = Selector::parse(".sheet-author a, .sheet-author u").unwrap();
         let section_selector = Selector::parse(".scs-section").unwrap();
 
-        // Metadata Selectors
-        let capo_group_sel = Selector::parse(".toolbar-group .group-content").unwrap();
-
-        // Extract Title & Artist
         let title = document
             .select(&title_selector)
             .next()
             .map(|el| el.text().collect::<String>().trim().to_string())
             .unwrap_or_else(|| "Unknown Title".to_string());
 
-        let artist = document
-            .select(&author_selector)
-            .next()
-            .map(|el| el.text().collect::<String>().trim().to_string())
-            .unwrap_or_else(|| "Unknown Artist".to_string());
-
-        // Extract Capo (Valid)
-        let mut capo = None;
-        for group in document.select(&capo_group_sel) {
-            let text: String = group.text().collect();
-            if text.contains("CAPO") {
-                let val_sel = Selector::parse(".toolbar-value").unwrap();
-                if let Some(val_el) = group.select(&val_sel).next() {
-                    capo = val_el.text().collect::<String>().trim().parse::<u8>().ok();
-                }
+        // A song of two performers names both, each in a link of its own.
+        let mut artists: Vec<String> = Vec::new();
+        for el in document.select(&author_selector) {
+            let name = el.text().collect::<String>().trim().to_string();
+            if !name.is_empty() && !artists.contains(&name) {
+                artists.push(name);
             }
         }
+        let artist = match artists.is_empty() {
+            true => "Unknown Artist".to_string(),
+            false => artists.join(", "),
+        };
 
-        // Extract Parts
-        let mut parts = Vec::new();
-        for section_el in document.select(&section_selector) {
-            let part_type_str = section_el.attr("data-type").unwrap_or("other");
-            let part_type = match part_type_str.to_lowercase().as_str() {
-                "intro" => PartType::Intro,
-                "verse" => PartType::Verse,
-                "prechorus" | "pre-chorus" => PartType::PreChorus,
-                "chorus" => PartType::Chorus,
-                "bridge" => PartType::Bridge,
-                "instrumental" | "interlude" | "solo" => PartType::Instrumental,
-                "tab" => PartType::Tab,
-                "outro" | "ending" => PartType::Outro,
-                other => PartType::Other(other.to_string()),
-            };
+        let parts: Vec<Part> = document
+            .select(&section_selector)
+            .map(parse_section)
+            .filter(|part| !part.lines.is_empty())
+            .collect();
 
-            let mut lines = Vec::new();
-            for line_node in section_el.children() {
-                if let Some(line_el) = ElementRef::wrap(line_node) {
-                    if line_el.value().name() == "div" {
-                        let parsed_line = parse_line(line_el);
-                        if !parsed_line.lyrics.is_empty() || !parsed_line.chords.is_empty() {
-                            lines.push(parsed_line);
-                        }
-                    }
-                }
-            }
-            parts.push(Part { part_type, lines });
+        if parts.is_empty() {
+            eprintln!("Warning: no song found on {}.", url);
         }
 
         Song {
             title,
             artist,
             source_website: url.to_string(),
-            key: None,      // Not provided by the site
-            tempo: None,    // Not provided by the site
-            language: None, // Not provided by the site, probably czech
-            tuning: None,   // Not provided by the site
-            capo,           // Successfully extracted!
+            key: None,      // Not provided by the site.
+            tempo: None,    // Not provided by the site.
+            language: None, // Not provided by the site, probably Czech.
+            tuning: None,   // Not provided by the site.
+            capo: parse_capo(&document),
             extra: Vec::new(),
             parts,
         }
     }
 }
 
-// Private helper functions
+/// Reads the fret the capo is on. The site writes it into its own menu, as
+/// "Kapodastr — pražec 2"; a capo on the nut is no capo at all.
+fn parse_capo(document: &Html) -> Option<u8> {
+    let items = Selector::parse(".overflow-item, .toolbar-group .group-content").ok()?;
+    let value = Selector::parse(".overflow-value, .toolbar-value").ok()?;
+
+    for item in document.select(&items) {
+        let label: String = item.text().collect::<String>().to_lowercase();
+        if !(label.contains("kapodastr") || label.contains("capo")) {
+            continue;
+        }
+        let written: String = match item.select(&value).next() {
+            Some(el) => el.text().collect(),
+            None => label,
+        };
+        let fret: String = written
+            .chars()
+            .skip_while(|c| !c.is_ascii_digit())
+            .take_while(char::is_ascii_digit)
+            .collect();
+        if let Ok(fret) = fret.parse::<u8>() {
+            return (fret > 0).then_some(fret);
+        }
+    }
+
+    None
+}
+
+fn parse_section(section_el: ElementRef) -> Part {
+    let part_type = match section_el
+        .attr("data-type")
+        .unwrap_or("other")
+        .to_lowercase()
+        .as_str()
+    {
+        "intro" => PartType::Intro,
+        "verse" => PartType::Verse,
+        "prechorus" | "pre-chorus" => PartType::PreChorus,
+        "chorus" | "refrain" => PartType::Chorus,
+        "bridge" => PartType::Bridge,
+        "instrumental" | "interlude" | "solo" => PartType::Instrumental,
+        "tab" => PartType::Tab,
+        "outro" | "ending" | "coda" => PartType::Outro,
+        other => PartType::Other(other.to_string()),
+    };
+
+    let lines = section_el
+        .children()
+        .filter_map(ElementRef::wrap)
+        .filter(|el| el.value().name() == "div")
+        .map(parse_line)
+        .filter(|line| !line.lyrics.is_empty() || !line.chords.is_empty())
+        .collect();
+
+    Part { part_type, lines }
+}
+
 fn parse_line(line_el: ElementRef) -> Line {
     let mut lyrics = String::new();
     let mut chords = Vec::new();
-    let mut current_char_position = 0;
+    let mut position = 0;
 
     for child in line_el.children() {
         match child.value() {
             Node::Text(text_node) => {
                 let chunk = text_node.replace('\u{a0}', " ");
                 lyrics.push_str(&chunk);
-                current_char_position += chunk.chars().count();
+                position += chunk.chars().count();
             }
             Node::Element(element_node) => {
                 if let Some(child_el) = ElementRef::wrap(child) {
                     if element_node.classes().any(|c| c == "scs-chord") {
-                        let structured_chord = parse_chord(child_el);
                         chords.push(PlacedChord {
-                            chord: structured_chord,
-                            position: current_char_position,
+                            chord: parse_chord_span(child_el),
+                            position,
                         });
                     } else {
                         let chunk = child_el.text().collect::<String>().replace('\u{a0}', " ");
                         lyrics.push_str(&chunk);
-                        current_char_position += chunk.chars().count();
+                        position += chunk.chars().count();
                     }
                 }
             }
             _ => {}
         }
+    }
+
+    // A line of nothing but chords — an intro or an interlude — is written
+    // with the chords one after another, each a hair's breadth apart. Where
+    // no word is left for them to stand over, they are laid out in reading
+    // order instead, rather than piled into the first few columns.
+    if lyrics.trim().is_empty() && !chords.is_empty() {
+        return Line {
+            lyrics: String::new(),
+            chords: laid_out(chords),
+        };
     }
 
     Line {
@@ -124,32 +168,177 @@ fn parse_line(line_el: ElementRef) -> Line {
     }
 }
 
-fn parse_chord(chord_el: ElementRef) -> Chord {
+/// Spaces chords out, each two columns behind the one before it.
+fn laid_out(chords: Vec<PlacedChord>) -> Vec<PlacedChord> {
+    const GAP: usize = 2;
+
+    let mut column = 0;
+    chords
+        .into_iter()
+        .map(|placed| {
+            let width = chord_width(&placed.chord);
+            let placed = PlacedChord {
+                position: column,
+                ..placed
+            };
+            column += width + GAP;
+            placed
+        })
+        .collect()
+}
+
+fn chord_width(chord: &Chord) -> usize {
+    chord.root.chars().count()
+        + chord.modifier.as_deref().map_or(0, |m| m.chars().count())
+        + chord.bass.as_deref().map_or(0, |b| b.chars().count() + 1)
+}
+
+/// Reads a chord out of its span. The site sets the root, what follows it and
+/// the bass note each in a span of its own; a page that stops doing so still
+/// has the chord written out in full.
+fn parse_chord_span(chord_el: ElementRef) -> Chord {
     let chk_sel = Selector::parse(".scs-chk").unwrap();
     let chv_sel = Selector::parse(".scs-chv").unwrap();
     let chb_sel = Selector::parse(".scs-chb").unwrap();
 
-    let root = chord_el
-        .select(&chk_sel)
-        .next()
-        .map(|el| el.text().collect::<String>().trim().to_string())
-        .unwrap_or_else(|| "??".to_string());
+    let piece = |selector: &Selector| -> Option<String> {
+        chord_el
+            .select(selector)
+            .next()
+            .map(|el| el.text().collect::<String>().trim().to_string())
+            .filter(|piece| !piece.is_empty())
+    };
 
-    let modifier = chord_el
-        .select(&chv_sel)
-        .next()
-        .map(|el| el.text().collect::<String>().trim().to_string())
-        .filter(|s| !s.is_empty());
+    match piece(&chk_sel) {
+        Some(root) => Chord {
+            root,
+            modifier: piece(&chv_sel),
+            bass: piece(&chb_sel),
+        },
+        None => parse_chord(chord_el.text().collect::<String>().trim()),
+    }
+}
 
-    let bass = chord_el
-        .select(&chb_sel)
-        .next()
-        .map(|el| el.text().collect::<String>().trim().to_string())
-        .filter(|s| !s.is_empty());
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-    Chord {
-        root,
-        modifier,
-        bass,
+    /// Wraps sections in the page the site would serve them in.
+    fn page(capo: &str, sections: &str) -> String {
+        format!(
+            "<html><body><h1 class=\"sheet-title\">A Song</h1>\
+             <h2 class=\"sheet-author\"><a href=\"#\"><u>A Band</u></a></h2>\
+             <div class=\"overflow-item\"><span class=\"overflow-label\">Kapodastr</span>\
+             <span class=\"overflow-value\">{}</span></div>\
+             <div class=\"smartchordsheet\">{}</div></body></html>",
+            capo, sections
+        )
+    }
+
+    /// The site's markup for one chord.
+    fn chord(root: &str, modifier: &str) -> String {
+        let modifier = match modifier.is_empty() {
+            true => String::new(),
+            false => format!("<span class=\"scs-chv\">{}</span>", modifier),
+        };
+        format!(
+            "<span class=\"scs-chord\"><span class=\"scs-chord-label\">\
+             <span class=\"scs-chk\">{}</span>{}</span></span>",
+            root, modifier
+        )
+    }
+
+    fn parse(capo: &str, sections: &str) -> Song {
+        KytaryCzParser.parse(
+            "https://akordy.kytary.cz/song/a-song",
+            &page(capo, sections),
+        )
+    }
+
+    fn names(line: &Line) -> Vec<(String, usize)> {
+        line.chords
+            .iter()
+            .map(|placed| {
+                let mut name = placed.chord.root.clone();
+                if let Some(modifier) = &placed.chord.modifier {
+                    name.push_str(modifier);
+                }
+                (name, placed.position)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_chord_stands_over_the_letter_it_is_written_in_front_of() {
+        let song = parse(
+            "pražec 0",
+            &format!(
+                "<div class=\"scs-section\" data-type=\"verse\"><div>{}zmizela jako laň {}u lesa</div></div>",
+                chord("D", "m"),
+                chord("G", "7")
+            ),
+        );
+
+        let line = &song.parts[0].lines[0];
+        assert_eq!(line.lyrics, "zmizela jako laň u lesa");
+        assert_eq!(names(line), [("Dm".to_string(), 0), ("G7".to_string(), 17)]);
+    }
+
+    #[test]
+    fn the_part_is_the_one_the_section_says_it_is() {
+        let song = parse(
+            "pražec 0",
+            &format!(
+                "<div class=\"scs-section\" data-type=\"chorus\"><div>{}O vodě</div></div>\
+                 <div class=\"scs-section\" data-type=\"interlude\"><div>{}</div></div>\
+                 <div class=\"scs-section\" data-type=\"ending\"><div>{}pam</div></div>",
+                chord("A", "m"),
+                chord("C", ""),
+                chord("E", "")
+            ),
+        );
+
+        assert!(matches!(song.parts[0].part_type, PartType::Chorus));
+        assert!(matches!(song.parts[1].part_type, PartType::Instrumental));
+        assert!(matches!(song.parts[2].part_type, PartType::Outro));
+    }
+
+    #[test]
+    fn a_line_of_nothing_but_chords_is_laid_out_in_reading_order() {
+        let song = parse(
+            "pražec 0",
+            &format!(
+                "<div class=\"scs-section\" data-type=\"interlude\"><div>Na na na <br></div>\
+                 <div>{}<char>&nbsp;</char>{}<char>&nbsp;</char>{}</div></div>",
+                chord("A", "m"),
+                chord("D", "m"),
+                chord("G", "7")
+            ),
+        );
+
+        let line = &song.parts[0].lines[1];
+        assert_eq!(line.lyrics, "");
+        assert_eq!(
+            names(line),
+            [
+                ("Am".to_string(), 0),
+                ("Dm".to_string(), 4),
+                ("G7".to_string(), 8)
+            ]
+        );
+    }
+
+    #[test]
+    fn the_fret_the_capo_is_on_is_read_off_the_menu() {
+        assert_eq!(parse("pražec 2", "").capo, Some(2));
+        assert_eq!(parse("pražec 0", "").capo, None);
+    }
+
+    #[test]
+    fn a_page_carrying_no_song_still_parses() {
+        let song = KytaryCzParser.parse("https://akordy.kytary.cz/", "<html></html>");
+
+        assert_eq!(song.title, "Unknown Title");
+        assert!(song.parts.is_empty());
     }
 }
