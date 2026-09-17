@@ -1,5 +1,5 @@
 use super::SongPrinter;
-use crate::models::{PartType, Song};
+use crate::models::{Line, Part, PartType, Song};
 use std::io::Write;
 
 pub struct LatexPrinter;
@@ -87,91 +87,12 @@ impl SongPrinter for LatexPrinter {
                 }
             };
 
-            // Process lines and merge chords inline
-            for line in &part.lines {
-                let chars: Vec<char> = line.lyrics.chars().collect();
-                let mut line_out = String::new();
-                let mut current_pos = 0;
-
-                // Track whether we are inside a quote block on this line
-                let mut in_quote = false;
-
-                // Ensure chords are processed left-to-right
-                let mut sorted_chords = line.chords.clone();
-                sorted_chords.sort_by_key(|c| c.position);
-
-                for placed in &sorted_chords {
-                    // Build full chord string (Root + Modifier + Bass)
-                    let mut chord_str = flat_note(&placed.chord.root);
-                    if let Some(modifier) = &placed.chord.modifier {
-                        chord_str.push_str(&flat_degrees(modifier));
-                    }
-                    if let Some(bass) = &placed.chord.bass {
-                        chord_str.push('/');
-                        chord_str.push_str(&flat_note(bass));
-                    }
-
-                    // Catch up lyrics cursor to where this chord belongs
-                    while current_pos < placed.position {
-                        if current_pos < chars.len() {
-                            let c = chars[current_pos];
-                            if c == '"' {
-                                if !in_quote {
-                                    line_out.push_str("\\enquote{");
-                                    in_quote = true;
-                                } else {
-                                    line_out.push('}');
-                                    in_quote = false;
-                                }
-                            } else {
-                                escape_char(c, &mut line_out);
-                            }
-                        } else {
-                            // Pad with spaces if chord extends past existing lyrics
-                            line_out.push(' ');
-                        }
-                        current_pos += 1;
-                    }
-
-                    // --- SPACING RULE CHECK ---
-                    // If the chord lands exactly on a space immediately following a non-space (word),
-                    // inject an extra space before placing the chord.
-                    if placed.position > 0
-                        && placed.position < chars.len()
-                        && !chars[placed.position - 1].is_whitespace()
-                        && chars[placed.position].is_whitespace()
-                    {
-                        line_out.push(' ');
-                    }
-
-                    // Inject the inline LaTeX chord
-                    line_out.push_str(&format!("\\[{}]", chord_str));
-                }
-
-                // Push any remaining lyrics characters after the last chord
-                while current_pos < chars.len() {
-                    let c = chars[current_pos];
-                    if c == '"' {
-                        if !in_quote {
-                            line_out.push_str("\\enquote{");
-                            in_quote = true;
-                        } else {
-                            line_out.push('}');
-                            in_quote = false;
-                        }
-                    } else {
-                        escape_char(c, &mut line_out);
-                    }
-                    current_pos += 1;
-                }
-
-                // Guardrail: If a source line has an unclosed quote, force-close it
-                // so it doesn't break the LaTeX compilation environment.
-                if in_quote {
-                    line_out.push('}');
-                }
-
-                writeln!(writer, "{}", line_out.trim_end())?;
+            // Merge the chords into the lyrics, line by line. How a quotation
+            // mark is set depends on where its counterpart is, so the whole
+            // part is resolved before the first line is written.
+            let marks = quote_marks(part);
+            for (line, marks) in part.lines.iter().zip(&marks) {
+                writeln!(writer, "{}", render_line(line, marks).trim_end())?;
             }
 
             // Close the environment
@@ -187,6 +108,168 @@ impl SongPrinter for LatexPrinter {
     fn extension(&self) -> &str {
         "tex"
     }
+}
+
+/// How a `"` of the lyrics reaches LaTeX. `\enquote{…}` is the one to reach
+/// for, but it is a group, and a group cannot be left open across a line: the
+/// `songs` package sets every line for itself. A quotation running over
+/// several lines therefore gets csquotes' unmatched pair, which prints the
+/// very same marks without opening anything.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum QuoteMark {
+    Open,
+    Close,
+    OpenSpanning,
+    CloseSpanning,
+}
+
+impl QuoteMark {
+    fn latex(self) -> &'static str {
+        match self {
+            QuoteMark::Open => "\\enquote{",
+            QuoteMark::Close => "}",
+            QuoteMark::OpenSpanning => "\\openautoquote{}",
+            QuoteMark::CloseSpanning => "\\closeautoquote{}",
+        }
+    }
+}
+
+/// Resolves every `"` of a part, line by line and in reading order. A
+/// quotation runs from each odd mark to the one after it; whether that one is
+/// still on the same line decides how both of them are set. Pairing stops at
+/// the part, so a stray mark cannot carry over into the rest of the song.
+fn quote_marks(part: &Part) -> Vec<Vec<QuoteMark>> {
+    // Every mark of the part as (line, its slot within that line).
+    let mut places: Vec<(usize, usize)> = Vec::new();
+    let mut marks: Vec<Vec<QuoteMark>> = Vec::with_capacity(part.lines.len());
+    for (line_index, line) in part.lines.iter().enumerate() {
+        let count = line.lyrics.matches('"').count();
+        places.extend((0..count).map(|slot| (line_index, slot)));
+        // Every slot is settled by the pass below; the value is a placeholder.
+        marks.push(vec![QuoteMark::Open; count]);
+    }
+
+    for pair in places.chunks(2) {
+        let (open_line, open_slot) = pair[0];
+        let open = match pair.get(1) {
+            Some(&(close_line, close_slot)) if close_line == open_line => {
+                marks[close_line][close_slot] = QuoteMark::Close;
+                QuoteMark::Open
+            }
+            Some(&(close_line, close_slot)) => {
+                marks[close_line][close_slot] = QuoteMark::CloseSpanning;
+                QuoteMark::OpenSpanning
+            }
+            // A quotation the source never closes. The unmatched mark prints
+            // on its own, where `\enquote{` would have left a group open and
+            // taken the rest of the song into it.
+            None => QuoteMark::OpenSpanning,
+        };
+        marks[open_line][open_slot] = open;
+    }
+
+    marks
+}
+
+/// The character a chord attaches to. A chord is sung on the word that follows
+/// it, never on a quotation mark, so when nothing but spaces and marks stand
+/// between the two the chord moves along to the word — past the `\enquote{`,
+/// which may not be broken into, or past the `}` that ends the quotation.
+/// Everything else, a chord sitting on a space above all, stays where it is.
+fn chord_target(chars: &[char], position: usize) -> usize {
+    let mut target = position;
+    let mut after_last_mark = None;
+    while target < chars.len() {
+        match chars[target] {
+            '"' => {
+                target += 1;
+                after_last_mark = Some(target);
+            }
+            c if c.is_whitespace() => target += 1,
+            _ => break,
+        }
+    }
+
+    match after_last_mark {
+        // No mark in the way: the chord belongs where the source put it.
+        None => position,
+        // The line runs out behind the quotation mark — the chord has no word
+        // left to attach to and only needs to clear the mark itself.
+        Some(after_last_mark) if target == chars.len() => after_last_mark,
+        Some(_) => target,
+    }
+}
+
+/// Writes one lyric character out, the quotation marks as resolved for them.
+fn push_lyric(c: char, marks: &[QuoteMark], next_mark: &mut usize, out: &mut String) {
+    if c == '"' {
+        if let Some(mark) = marks.get(*next_mark) {
+            out.push_str(mark.latex());
+        }
+        *next_mark += 1;
+    } else {
+        escape_char(c, out);
+    }
+}
+
+/// Merges a line's chords into its lyrics.
+fn render_line(line: &Line, marks: &[QuoteMark]) -> String {
+    let chars: Vec<char> = line.lyrics.chars().collect();
+    let mut out = String::with_capacity(line.lyrics.len());
+    let mut current_pos = 0;
+    let mut next_mark = 0;
+
+    // Ensure chords are processed left-to-right
+    let mut sorted_chords = line.chords.clone();
+    sorted_chords.sort_by_key(|c| c.position);
+
+    for placed in &sorted_chords {
+        // Build full chord string (Root + Modifier + Bass)
+        let mut chord_str = flat_note(&placed.chord.root);
+        if let Some(modifier) = &placed.chord.modifier {
+            chord_str.push_str(&flat_degrees(modifier));
+        }
+        if let Some(bass) = &placed.chord.bass {
+            chord_str.push('/');
+            chord_str.push_str(&flat_note(bass));
+        }
+
+        // Catch the lyrics cursor up to the word this chord is sung on.
+        let target = chord_target(&chars, placed.position);
+        while current_pos < target {
+            if current_pos < chars.len() {
+                push_lyric(chars[current_pos], marks, &mut next_mark, &mut out);
+            } else {
+                // Pad with spaces if chord extends past existing lyrics
+                out.push(' ');
+            }
+            current_pos += 1;
+        }
+
+        // --- SPACING RULE CHECK ---
+        // If the chord lands exactly on a space immediately following a non-space (word),
+        // inject an extra space before placing the chord. A chord that moved along to a
+        // word already has that space — and the quotation mark — written out in front of it.
+        if target == placed.position
+            && placed.position > 0
+            && placed.position < chars.len()
+            && !chars[placed.position - 1].is_whitespace()
+            && chars[placed.position].is_whitespace()
+        {
+            out.push(' ');
+        }
+
+        // Inject the inline LaTeX chord
+        out.push_str(&format!("\\[{}]", chord_str));
+    }
+
+    // Push any remaining lyrics characters after the last chord
+    while current_pos < chars.len() {
+        push_lyric(chars[current_pos], marks, &mut next_mark, &mut out);
+        current_pos += 1;
+    }
+
+    out
 }
 
 /// Rewrites the flat of a note name for the `songs` package, which makes `&`
@@ -265,6 +348,118 @@ fn escape_char(c: char, out: &mut String) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use crate::models::{Chord, PlacedChord};
+
+    /// A lyric line with its chords, each given as (column, chord name).
+    fn line(lyrics: &str, chords: &[(usize, &str)]) -> Line {
+        Line {
+            lyrics: lyrics.to_string(),
+            chords: chords
+                .iter()
+                .map(|&(position, root)| PlacedChord {
+                    chord: Chord {
+                        root: root.to_string(),
+                        modifier: None,
+                        bass: None,
+                    },
+                    position,
+                })
+                .collect(),
+        }
+    }
+
+    fn verse(lines: Vec<Line>) -> Part {
+        Part {
+            part_type: PartType::Verse,
+            lines,
+        }
+    }
+
+    /// Renders a whole part the way the printer does.
+    fn render(part: &Part) -> Vec<String> {
+        let marks = quote_marks(part);
+        part.lines
+            .iter()
+            .zip(&marks)
+            .map(|(line, marks)| render_line(line, marks))
+            .collect()
+    }
+
+    #[test]
+    fn a_quotation_on_one_line_is_a_group() {
+        let part = verse(vec![line("He said \"no way\" and left", &[])]);
+        assert_eq!(render(&part), ["He said \\enquote{no way} and left"]);
+    }
+
+    #[test]
+    fn a_chord_in_front_of_a_quotation_is_set_inside_it() {
+        let part = verse(vec![line(
+            "   \"Sir, can you help me?\"",
+            &[(0, "Em"), (17, "D")],
+        )]);
+        assert_eq!(
+            render(&part),
+            ["   \\enquote{\\[Em]Sir, can you \\[D]help me?}"]
+        );
+    }
+
+    #[test]
+    fn a_chord_behind_a_quotation_stays_outside_it() {
+        let part = verse(vec![line("say \"no\"  and go", &[(8, "G")])]);
+        assert_eq!(render(&part), ["say \\enquote{no} \\[G]  and go"]);
+    }
+
+    #[test]
+    fn a_chord_on_the_closing_mark_is_sung_on_the_word_behind_it() {
+        let part = verse(vec![line("say \"no\" and go", &[(7, "G")])]);
+        assert_eq!(render(&part), ["say \\enquote{no} \\[G]and go"]);
+    }
+
+    #[test]
+    fn a_quotation_over_several_lines_cannot_be_a_group() {
+        let part = verse(vec![
+            line("  \"Sir, can you help me?", &[(2, "Em")]),
+            line("It's cold out here,", &[]),
+            line("is there somewhere?\"", &[(19, "D")]),
+        ]);
+        assert_eq!(
+            render(&part),
+            [
+                "  \\openautoquote{}\\[Em]Sir, can you help me?",
+                "It's cold out here,",
+                "is there somewhere?\\closeautoquote{}\\[D]",
+            ]
+        );
+    }
+
+    #[test]
+    fn a_quotation_the_source_never_closes_leaves_no_group_open() {
+        let part = verse(vec![line("He said \"hello", &[])]);
+        assert_eq!(render(&part), ["He said \\openautoquote{}hello"]);
+    }
+
+    #[test]
+    fn a_stray_mark_does_not_reach_into_the_next_part() {
+        let first = verse(vec![line("\"Sir,", &[])]);
+        let second = verse(vec![line("he walks on\"", &[])]);
+        assert_eq!(render(&first), ["\\openautoquote{}Sir,"]);
+        assert_eq!(render(&second), ["he walks on\\openautoquote{}"]);
+    }
+
+    #[test]
+    fn chords_keep_their_place_where_no_quotation_is_in_the_way() {
+        let part = verse(vec![line("She calls out to the man", &[(0, "Em"), (10, "D")])]);
+        assert_eq!(render(&part), ["\\[Em]She calls \\[D]out to the man"]);
+    }
+
+    /// A chord landing on the space behind a word keeps a space of its own,
+    /// so that the two do not run together.
+    #[test]
+    fn a_chord_on_a_space_is_kept_off_the_word_in_front_of_it() {
+        let part = verse(vec![line("She calls out to the man", &[(9, "D")])]);
+        assert_eq!(render(&part), ["She calls \\[D] out to the man"]);
+    }
 
     #[test]
     fn flats_become_ampersands() {
