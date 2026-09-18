@@ -1,7 +1,7 @@
 use deunicode::deunicode;
 use heck::ToUpperCamelCase;
 use reqwest::header::{
-    ACCEPT, ACCEPT_LANGUAGE, HeaderMap, HeaderValue, UPGRADE_INSECURE_REQUESTS,
+    ACCEPT, ACCEPT_LANGUAGE, COOKIE, HeaderMap, HeaderValue, UPGRADE_INSECURE_REQUESTS,
 };
 use std::env;
 use std::fs::{self, File};
@@ -45,6 +45,19 @@ const USER_AGENT: &str =
 /// usually short-lived, so a couple of attempts with a growing pause are enough.
 const ATTEMPTS: u32 = 3;
 
+/// The cookies a browser carries to a site that has already let it in, and the
+/// browser they were earned by. pisnicky-akordy.cz sits behind a Cloudflare
+/// challenge that is solved by running its JavaScript — which no plain HTTP
+/// client does, this one included: neither the headers a browser sends nor its
+/// TLS fingerprint gets past it, only the `cf_clearance` cookie the solved
+/// challenge leaves behind. So the way through is to lend this tool the
+/// clearance a browser already holds; see the README for where to copy it from.
+///
+/// Cloudflare ties that cookie to the browser that solved the challenge, so the
+/// user agent has to be set to the same browser's — hence the second variable.
+const COOKIE_VAR: &str = "CHORDS_COOKIE";
+const USER_AGENT_VAR: &str = "CHORDS_USER_AGENT";
+
 /// Builds a client that presents itself as a browser: the headers one sends,
 /// a cookie jar to carry whatever the site sets on the way in, and transparent
 /// gzip so the `Accept-Encoding` a browser sends can be honoured.
@@ -66,8 +79,29 @@ fn build_client() -> Result<reqwest::Client, reqwest::Error> {
     headers.insert("Sec-Fetch-Site", HeaderValue::from_static("none"));
     headers.insert("Sec-Fetch-User", HeaderValue::from_static("?1"));
 
+    // The clearance a browser lent us, when it did. It goes in as a default
+    // header rather than into the jar: the jar only carries what the site sets
+    // during this run, and a challenged site sets nothing worth keeping.
+    if let Some(cookie) = env::var(COOKIE_VAR).ok().filter(|c| !c.trim().is_empty()) {
+        match HeaderValue::from_str(cookie.trim()) {
+            Ok(value) => {
+                headers.insert(COOKIE, value);
+            }
+            Err(_) => eprintln!(
+                "Warning: {} is not a usable Cookie header; ignoring it.",
+                COOKIE_VAR
+            ),
+        }
+    }
+
+    // The browser the clearance was earned by, when it is not the one below.
+    let user_agent = env::var(USER_AGENT_VAR)
+        .ok()
+        .filter(|agent| !agent.trim().is_empty())
+        .unwrap_or_else(|| USER_AGENT.to_string());
+
     reqwest::Client::builder()
-        .user_agent(USER_AGENT)
+        .user_agent(user_agent)
         .default_headers(headers)
         .cookie_store(true)
         .gzip(true)
@@ -96,15 +130,22 @@ async fn fetch_html(url: &str) -> Result<String, String> {
         };
 
         let status = response.status();
+        // The body is worth reading whatever the status says: a challenge is
+        // served under a 403 as readily as under a 200, and reading it is the
+        // only way to tell a bot check from a site that is merely refusing.
+        let body = response
+            .text()
+            .await
+            .map_err(|e| format!("Could not read the page: {}", e))?;
+
+        if looks_like_a_bot_check(&body) {
+            // Asking again would only fetch the same challenge: it is answered
+            // by running its JavaScript, and a second identical request does
+            // not run any. So this one is reported rather than retried.
+            return Err(bot_check_message(url));
+        }
+
         if status.is_success() {
-            let body = response
-                .text()
-                .await
-                .map_err(|e| format!("Could not read the page: {}", e))?;
-            if looks_like_a_bot_check(&body) {
-                last = "the site answered with a bot check".to_string();
-                continue;
-            }
             return Ok(body);
         }
 
@@ -126,8 +167,38 @@ async fn fetch_html(url: &str) -> Result<String, String> {
     ))
 }
 
-/// Recognises the interstitials sites put in front of a page instead of
-/// refusing outright, which arrive with a perfectly fine 200.
+/// Says what stood in the page's place and what gets past it.
+///
+/// Both ways out end at the same browser, because only a browser answers the
+/// challenge: either it saves the page it was shown, or it lends its clearance
+/// to this tool.
+fn bot_check_message(url: &str) -> String {
+    format!(
+        "Could not fetch {url} — the site answered with a bot check rather than \
+         the song.\n\
+         It is solved by running the challenge's JavaScript, which this tool \
+         does not do, so there are two ways round it:\n\
+         \n\
+         1. Open the page in a browser, save it (Ctrl-S), and pass the saved \
+         file instead:\n\
+         \x20      chords_converter page.html latex\n\
+         \n\
+         2. Lend this tool the clearance your browser already holds. In the \
+         browser, on that site: DevTools → Application (Storage) → Cookies, and \
+         copy the `cf_clearance` value; the user agent has to be the same \
+         browser's, which `navigator.userAgent` in the console prints:\n\
+         \x20      export {COOKIE_VAR}='cf_clearance=<value>'\n\
+         \x20      export {USER_AGENT_VAR}='<what navigator.userAgent printed>'\n\
+         \n\
+         The cookie is tied to that browser and address and lasts a while, not \
+         forever — when it lapses, copy it again or fall back on 1."
+    )
+}
+
+/// Recognises the interstitials sites put in front of a page instead of the
+/// page itself. The status they come under says nothing: ultimate-guitar.com
+/// serves its challenge with a perfectly fine 200, pisnicky-akordy.cz serves
+/// the same challenge with a 403, so the body is what gets read.
 ///
 /// The signs have to be the interstitial's own. Cloudflare puts its passive
 /// detection script (`/cdn-cgi/challenge-platform/...`) on ordinary pages as
@@ -295,4 +366,52 @@ async fn main() {
     };
 
     save_song(&song, format_arg, printer.as_ref());
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The challenge Cloudflare stands in front of pisnicky-akordy.cz, cut
+    /// down to the markup it is recognised by. The site serves it with a 403,
+    /// ultimate-guitar.com serves its own with a 200 — which is why the status
+    /// is not what the page is judged on.
+    const CHALLENGE: &str = r#"<!DOCTYPE html><html lang="en-US"><head>
+        <title>Just a moment...</title><meta name="robots" content="noindex,nofollow">
+        </head><body><div class="main-wrapper" role="main"><noscript>
+        <span id="challenge-error-text">Enable JavaScript and cookies to continue</span>
+        </noscript></div><script>window._cf_chl_opt = {cType: 'managed'};</script>
+        </body></html>"#;
+
+    #[test]
+    fn the_challenge_is_recognised_however_it_is_served() {
+        assert!(looks_like_a_bot_check(CHALLENGE));
+    }
+
+    /// The song pages carry Cloudflare's passive script too; taking that for a
+    /// challenge would turn every page of the site into one.
+    #[test]
+    fn an_ordinary_page_carrying_cloudflares_script_is_not_a_bot_check() {
+        let page = format!(
+            "<html><head><title>A Song | A Band</title></head><body>\
+             <div id=\"songtext\"><pre>{}</pre></div>\
+             <script src=\"/cdn-cgi/challenge-platform/h/g/scripts/jsd/main.js\"></script>\
+             </body></html>",
+            "lyrics ".repeat(200)
+        );
+
+        assert!(!looks_like_a_bot_check(&page));
+    }
+
+    /// Both ways past the challenge have to be in the message, since neither
+    /// is something the tool can do on its own.
+    #[test]
+    fn the_message_names_both_ways_past_the_challenge() {
+        let message = bot_check_message("https://pisnicky-akordy.cz/a-band/a-song");
+
+        assert!(message.contains("https://pisnicky-akordy.cz/a-band/a-song"));
+        assert!(message.contains("save it"));
+        assert!(message.contains(COOKIE_VAR));
+        assert!(message.contains(USER_AGENT_VAR));
+    }
 }

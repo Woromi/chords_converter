@@ -41,6 +41,38 @@ come back as a bot check, open it in a browser, save it and pass the saved file:
 a saved page is recognised by the markup its site is built on, so it needs no
 address, and the one the page records is what the song names as its source.
 
+### When a site answers with a bot check
+pisnicky-akordy.cz stands its whole site behind a Cloudflare challenge, which it
+serves with a 403 where Ultimate Guitar serves its own with a 200 — so it is the
+body, not the status, that says a challenge came back instead of the song.
+
+That challenge is answered by running its JavaScript, and no plain HTTP client
+runs any: looking more like a browser does not help, and neither does looking
+like one down to the TLS fingerprint — Chrome, Firefox and Safari fingerprints
+are all turned away just the same. Retrying is therefore pointless too, so a
+recognised challenge is reported at once rather than asked for three times over.
+
+Two things do get past it, both by way of a browser that has already been let
+in:
+
+```
+# 1. Save the page from the browser (Ctrl-S) and pass the file
+cargo run -- page.html latex
+
+# 2. Lend the tool the clearance the browser holds
+export CHORDS_COOKIE='cf_clearance=<value>'
+export CHORDS_USER_AGENT='<what navigator.userAgent prints>'
+cargo run -- <url> latex
+```
+
+The cookie is in DevTools → Application (Storage) → Cookies, on that site.
+Cloudflare ties it to the browser that earned it and to the address it was
+earned from, so `CHORDS_USER_AGENT` has to be that same browser's, which
+`navigator.userAgent` in the console prints. It lasts a while rather than
+forever; when it lapses, copy it again or fall back on the saved page. Both
+variables apply to every site, so a `cf_clearance` for one is best exported only
+for the run that needs it.
+
 ### Text input format
 Plain-text songs use the common "chords over lyrics" layout — a line of chords
 positioned above the lyric line it belongs to. The header, `Label: value`
