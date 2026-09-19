@@ -1,5 +1,5 @@
 use super::SongPrinter;
-use crate::models::{Line, Part, PartType, Song};
+use crate::models::{Chord, Line, Part, PartType, Song};
 use std::io::Write;
 
 pub struct LatexPrinter;
@@ -87,9 +87,9 @@ impl SongPrinter for LatexPrinter {
                 }
             };
 
-            // Merge the chords into the lyrics, line by line. How a quotation
-            // mark is set depends on where its counterpart is, so the whole
-            // part is resolved before the first line is written.
+            // Merge the chords into the lyrics, line by line. Whether a
+            // quotation mark opens or closes follows from the ones before it,
+            // so the whole part is resolved before the first line is written.
             let marks = quote_marks(part);
             for (line, marks) in part.lines.iter().zip(&marks) {
                 writeln!(writer, "{}", render_line(line, marks).trim_end())?;
@@ -110,17 +110,12 @@ impl SongPrinter for LatexPrinter {
     }
 }
 
-/// How a `"` of the lyrics reaches LaTeX. `\enquote{…}` is the one to reach
-/// for, but it is a group, and a group cannot be left open across a line: the
-/// `songs` package sets every line for itself. A quotation running over
-/// several lines therefore gets csquotes' unmatched pair, which prints the
-/// very same marks without opening anything.
+/// How a `"` of the lyrics reaches LaTeX: csquotes' `\enquote{…}`, opened by
+/// the first mark of a quotation and closed by the one that answers it.
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum QuoteMark {
     Open,
     Close,
-    OpenSpanning,
-    CloseSpanning,
 }
 
 impl QuoteMark {
@@ -128,47 +123,32 @@ impl QuoteMark {
         match self {
             QuoteMark::Open => "\\enquote{",
             QuoteMark::Close => "}",
-            QuoteMark::OpenSpanning => "\\openautoquote{}",
-            QuoteMark::CloseSpanning => "\\closeautoquote{}",
         }
     }
 }
 
 /// Resolves every `"` of a part, line by line and in reading order. A
-/// quotation runs from each odd mark to the one after it; whether that one is
-/// still on the same line decides how both of them are set. Pairing stops at
-/// the part, so a stray mark cannot carry over into the rest of the song.
+/// quotation runs from each odd mark to the one after it, wherever that one
+/// sits. Pairing stops at the part, so a stray mark cannot carry over into the
+/// rest of the song.
 fn quote_marks(part: &Part) -> Vec<Vec<QuoteMark>> {
-    // Every mark of the part as (line, its slot within that line).
-    let mut places: Vec<(usize, usize)> = Vec::new();
-    let mut marks: Vec<Vec<QuoteMark>> = Vec::with_capacity(part.lines.len());
-    for (line_index, line) in part.lines.iter().enumerate() {
-        let count = line.lyrics.matches('"').count();
-        places.extend((0..count).map(|slot| (line_index, slot)));
-        // Every slot is settled by the pass below; the value is a placeholder.
-        marks.push(vec![QuoteMark::Open; count]);
-    }
-
-    for pair in places.chunks(2) {
-        let (open_line, open_slot) = pair[0];
-        let open = match pair.get(1) {
-            Some(&(close_line, close_slot)) if close_line == open_line => {
-                marks[close_line][close_slot] = QuoteMark::Close;
-                QuoteMark::Open
-            }
-            Some(&(close_line, close_slot)) => {
-                marks[close_line][close_slot] = QuoteMark::CloseSpanning;
-                QuoteMark::OpenSpanning
-            }
-            // A quotation the source never closes. The unmatched mark prints
-            // on its own, where `\enquote{` would have left a group open and
-            // taken the rest of the song into it.
-            None => QuoteMark::OpenSpanning,
-        };
-        marks[open_line][open_slot] = open;
-    }
-
-    marks
+    let mut seen = 0;
+    part.lines
+        .iter()
+        .map(|line| {
+            line.lyrics
+                .matches('"')
+                .map(|_| {
+                    seen += 1;
+                    if seen % 2 == 1 {
+                        QuoteMark::Open
+                    } else {
+                        QuoteMark::Close
+                    }
+                })
+                .collect()
+        })
+        .collect()
 }
 
 /// The character a chord attaches to. A chord is sung on the word that follows
@@ -224,15 +204,7 @@ fn render_line(line: &Line, marks: &[QuoteMark]) -> String {
     sorted_chords.sort_by_key(|c| c.position);
 
     for placed in &sorted_chords {
-        // Build full chord string (Root + Modifier + Bass)
-        let mut chord_str = flat_note(&placed.chord.root);
-        if let Some(modifier) = &placed.chord.modifier {
-            chord_str.push_str(&flat_degrees(modifier));
-        }
-        if let Some(bass) = &placed.chord.bass {
-            chord_str.push('/');
-            chord_str.push_str(&flat_note(bass));
-        }
+        let chord_str = chord_name(&placed.chord);
 
         // Catch the lyrics cursor up to the word this chord is sung on.
         let target = chord_target(&chars, placed.position);
@@ -270,6 +242,28 @@ fn render_line(line: &Line, marks: &[QuoteMark]) -> String {
     }
 
     out
+}
+
+/// Writes a chord out as the `songs` package reads it: root, quality and bass
+/// note, the flats of each rewritten for it.
+///
+/// The "no chord" mark is not a chord to be named but the absence of one, and
+/// the package has a macro that sets it — which goes where a name would, the
+/// mark being played in its column like any chord.
+fn chord_name(chord: &Chord) -> String {
+    if chord.is_no_chord() {
+        return "\\nochord".to_string();
+    }
+
+    let mut name = flat_note(&chord.root);
+    if let Some(modifier) = &chord.modifier {
+        name.push_str(&flat_degrees(modifier));
+    }
+    if let Some(bass) = &chord.bass {
+        name.push('/');
+        name.push_str(&flat_note(bass));
+    }
+    name
 }
 
 /// Rewrites the flat of a note name for the `songs` package, which makes `&`
@@ -349,7 +343,7 @@ fn escape_char(c: char, out: &mut String) {
 mod tests {
     use super::*;
 
-    use crate::models::{Chord, PlacedChord};
+    use crate::models::PlacedChord;
 
     /// A lyric line with its chords, each given as (column, chord name).
     fn line(lyrics: &str, chords: &[(usize, &str)]) -> Line {
@@ -417,7 +411,7 @@ mod tests {
     }
 
     #[test]
-    fn a_quotation_over_several_lines_cannot_be_a_group() {
+    fn a_quotation_over_several_lines_is_a_group_as_well() {
         let part = verse(vec![
             line("  \"Sir, can you help me?", &[(2, "Em")]),
             line("It's cold out here,", &[]),
@@ -426,25 +420,25 @@ mod tests {
         assert_eq!(
             render(&part),
             [
-                "  \\openautoquote{}\\[Em]Sir, can you help me?",
+                "  \\enquote{\\[Em]Sir, can you help me?",
                 "It's cold out here,",
-                "is there somewhere?\\closeautoquote{}\\[D]",
+                "is there somewhere?}\\[D]",
             ]
         );
     }
 
     #[test]
-    fn a_quotation_the_source_never_closes_leaves_no_group_open() {
+    fn a_quotation_the_source_never_closes_opens_one_all_the_same() {
         let part = verse(vec![line("He said \"hello", &[])]);
-        assert_eq!(render(&part), ["He said \\openautoquote{}hello"]);
+        assert_eq!(render(&part), ["He said \\enquote{hello"]);
     }
 
     #[test]
     fn a_stray_mark_does_not_reach_into_the_next_part() {
         let first = verse(vec![line("\"Sir,", &[])]);
         let second = verse(vec![line("he walks on\"", &[])]);
-        assert_eq!(render(&first), ["\\openautoquote{}Sir,"]);
-        assert_eq!(render(&second), ["he walks on\\openautoquote{}"]);
+        assert_eq!(render(&first), ["\\enquote{Sir,"]);
+        assert_eq!(render(&second), ["he walks on\\enquote{"]);
     }
 
     #[test]
@@ -459,6 +453,15 @@ mod tests {
     fn a_chord_on_a_space_is_kept_off_the_word_in_front_of_it() {
         let part = verse(vec![line("She calls out to the man", &[(9, "D")])]);
         assert_eq!(render(&part), ["She calls \\[D] out to the man"]);
+    }
+
+    /// "N.C." is the absence of a chord rather than one to be named, and the
+    /// package has a macro that sets it — written where a name would be, in
+    /// the column the mark was played in.
+    #[test]
+    fn the_no_chord_mark_is_set_with_the_packages_macro() {
+        let part = verse(vec![line("and away we go", &[(0, "N.C."), (9, "G")])]);
+        assert_eq!(render(&part), ["\\[\\nochord]and away \\[G]we go"]);
     }
 
     #[test]

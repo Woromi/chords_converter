@@ -1,5 +1,5 @@
 use super::SongParser;
-use super::text::parse_body;
+use super::text::{parse_body, shorten_minor_name};
 use crate::models::Song;
 use scraper::{Html, Selector};
 
@@ -142,7 +142,7 @@ fn diagram_of(line: &str) -> Option<String> {
         && !chord.contains(char::is_whitespace)
         && !fingering.is_empty()
         && fingering.chars().all(plays))
-    .then(|| format!("{} ({})", chord, fingering))
+    .then(|| format!("{} ({})", shorten_minor_name(chord), fingering))
 }
 
 /// A `[INTRO:]`-style block heading.
@@ -242,8 +242,9 @@ mod tests {
         assert!(matches!(song.parts[0].part_type, PartType::Verse));
         let line = &song.parts[0].lines[0];
         assert_eq!(line.lyrics, "Jede šrot, jede šrot");
-        // "  [Ami]" draws as "   Ami ", above the "J" the marker gave up.
-        assert_eq!(chords(line), [("Ami".to_string(), 0)]);
+        // "  [Ami]" draws as "   Ami ", above the "J" the marker gave up —
+        // the column is the one the source wrote, the spelling ours.
+        assert_eq!(chords(line), [("Am".to_string(), 0)]);
     }
 
     #[test]
@@ -253,7 +254,7 @@ mod tests {
         assert_eq!(song.parts[0].lines[0].lyrics, "Povím vám jednu baladu");
         assert_eq!(
             chords(&song.parts[0].lines[0]),
-            [("C/G".to_string(), 1), ("F#/Hmi".to_string(), 12)]
+            [("C/G".to_string(), 1), ("F#/Hm".to_string(), 12)]
         );
     }
 
@@ -269,7 +270,7 @@ mod tests {
                 ("Note".to_string(), "Zapsal Franta".to_string()),
                 (
                     "Chord diagrams".to_string(),
-                    "Ami (X02210), Dsus2 (XX0230)".to_string()
+                    "Am (X02210), Dsus2 (XX0230)".to_string()
                 ),
                 ("Added".to_string(), "11. 07. 2014".to_string()),
             ]

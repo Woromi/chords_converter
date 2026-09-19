@@ -1,5 +1,5 @@
 use super::SongParser;
-use super::text::parse_body;
+use super::text::{parse_body, shorten_minor_name};
 use crate::models::Song;
 use scraper::{Html, Selector};
 use serde_json::Value;
@@ -10,6 +10,11 @@ use serde_json::Value;
 /// `<div class="js-store" data-content="...">` that the site's own scripts
 /// render, and the sheet lives in it under
 /// `store.page.data.tab_view.wiki_tab.content`.
+///
+/// Beside it, `store.page.data.tab_view.meta` holds what the site prints in
+/// the sheet's header — the fret the capo is on, the tuning, the key. None of
+/// the three need be written into the sheet itself, and the capo regularly is
+/// not, so the header is read before the tabber's remark is.
 ///
 /// That content is the familiar "chords over lyrics" layout dressed in the
 /// site's markup: `[ch]..[/ch]` around every chord, `[tab]..[/tab]` around a
@@ -34,6 +39,18 @@ impl SongParser for UltimateGuitarComParser {
                 .filter(|value| !value.is_empty())
                 .map(str::to_string)
         };
+
+        // The header's capo, which the site writes as a number. A capo on no
+        // fret is no capo at all, and says nothing about one the remark names.
+        let capo = data
+            .and_then(|data| data.pointer("/tab_view/meta/capo"))
+            .and_then(|fret| match fret {
+                Value::Number(fret) => fret.as_u64(),
+                Value::String(fret) => fret.trim().parse().ok(),
+                _ => None,
+            })
+            .and_then(|fret| u8::try_from(fret).ok())
+            .filter(|fret| *fret > 0);
 
         let content = field("/tab_view/wiki_tab/content").unwrap_or_default();
         if content.is_empty() {
@@ -63,19 +80,64 @@ impl SongParser for UltimateGuitarComParser {
 
         Song {
             title,
-            artist: field("/tab/artist_name").unwrap_or_else(|| "Unknown Artist".to_string()),
+            artist: credited_artists(data)
+                .or_else(|| field("/tab/artist_name"))
+                .unwrap_or_else(|| "Unknown Artist".to_string()),
             source_website: field("/tab/tab_url").unwrap_or_else(|| url.to_string()),
             key: field("/tab/tonality_name")
+                .or_else(|| field("/tab_view/meta/tonality"))
                 .or_else(|| field("/tab/recording/tonality_name"))
-                .or(notes.key),
+                .or(notes.key)
+                .as_deref()
+                .map(shorten_minor_name),
             tempo: notes.tempo,
             language: None, // Not provided by the site.
-            tuning: notes.tuning,
-            capo: notes.capo,
+            tuning: field("/tab_view/meta/tuning/name")
+                .or_else(|| field("/tab_view/meta/tuning/value"))
+                .or(notes.tuning),
+            capo: capo.or(notes.capo),
             extra,
             parts: parse_body(&strip_markup(body)),
         }
     }
+}
+
+/// Everyone the song is credited to, as the site prints them above the sheet.
+///
+/// `tab.artist_name` names one artist only — whoever's page the tab is filed
+/// under — so a song written or sung by several lost all but the first of
+/// them. The header lists them all, each entry carrying the separator that
+/// goes in front of it, which is what makes a credit read "A, B & C" rather
+/// than a list in one punctuation mark.
+fn credited_artists(data: Option<&Value>) -> Option<String> {
+    const PATHS: [&str; 2] = ["/headerMeta/artists", "/tab_view/headerMeta/artists"];
+
+    let artists = PATHS
+        .iter()
+        .find_map(|path| data?.pointer(path)?.as_array())?;
+
+    let mut credit = String::new();
+    for artist in artists {
+        let name = artist
+            .get("name")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|name| !name.is_empty());
+        let Some(name) = name else { continue };
+
+        if !credit.is_empty() {
+            credit.push_str(
+                artist
+                    .get("separator")
+                    .and_then(Value::as_str)
+                    .filter(|separator| !separator.is_empty())
+                    .unwrap_or(", "),
+            );
+        }
+        credit.push_str(name);
+    }
+
+    (!credit.is_empty()).then_some(credit)
 }
 
 /// Pulls the JSON the page keeps in the `data-content` attribute of its
@@ -212,21 +274,25 @@ mod tests {
     use super::*;
     use crate::models::{Line, PartType};
 
-    /// Wraps a sheet in the page the site would serve it in, JSON blob and all.
-    fn page(content: &str) -> String {
-        let store = serde_json::json!({
-            "store": { "page": { "data": {
-                "tab": {
+    /// Wraps a sheet in the page the site would serve it in, JSON blob and
+    /// all, `meta` standing for the header the site prints above the sheet.
+    fn page_with(content: &str, meta: Value) -> String {
+        page_of(serde_json::json!({
+            "tab": {
                     "song_name": "A Song",
                     "artist_name": "A Band",
                     "tonality_name": "Em",
                     "difficulty": "novice",
                     "username": "somebody",
-                },
-                "tab_view": { "wiki_tab": { "content": content } },
-            }}}
-        })
-        .to_string();
+            },
+            "tab_view": { "wiki_tab": { "content": content }, "meta": meta },
+        }))
+    }
+
+    /// Wraps the page's JSON the way the site ships it: escaped into the
+    /// `data-content` attribute of its store div.
+    fn page_of(data: Value) -> String {
+        let store = serde_json::json!({ "store": { "page": { "data": data } } }).to_string();
 
         format!(
             "<html><body><div class=\"js-store\" data-content=\"{}\"></div></body></html>",
@@ -234,10 +300,19 @@ mod tests {
         )
     }
 
+    /// A page whose header says nothing, leaving the sheet to speak for itself.
+    fn page(content: &str) -> String {
+        page_with(content, Value::Null)
+    }
+
     fn parse(content: &str) -> Song {
+        parse_page(&page(content))
+    }
+
+    fn parse_page(page: &str) -> Song {
         UltimateGuitarComParser.parse(
             "https://tabs.ultimate-guitar.com/tab/a-band/a-song-chords-1",
-            &page(content),
+            page,
         )
     }
 
@@ -316,6 +391,94 @@ mod tests {
 
         assert_eq!(song.capo, Some(3));
         assert!(song.extra.iter().all(|(label, _)| label != "Note"));
+    }
+
+    /// The fret the capo is on is a field of the page, not a line of the
+    /// sheet: a tab that never mentions it in its remark is still played with
+    /// the capo the site prints above it.
+    #[test]
+    fn the_capo_is_read_out_of_the_header_the_site_prints() {
+        let song = parse_page(&page_with(
+            "[Verse]\r\n[tab][ch]C[/ch]\r\nand away we go[/tab]",
+            serde_json::json!({
+                "capo": 2,
+                "tuning": { "name": "Drop D", "value": "D A D G B E" },
+            }),
+        ));
+
+        assert_eq!(song.capo, Some(2));
+        assert_eq!(song.tuning.as_deref(), Some("Drop D"));
+    }
+
+    /// A capo on no fret is the site saying there is none — which leaves the
+    /// remark to be read, rather than standing in its way.
+    #[test]
+    fn a_capo_on_no_fret_is_no_capo() {
+        let song = parse_page(&page_with(
+            "Capo 3rd fret\r\n\r\n[Verse]\r\n[tab][ch]C[/ch]\r\nand away we go[/tab]",
+            serde_json::json!({ "capo": 0 }),
+        ));
+
+        assert_eq!(song.capo, Some(3));
+    }
+
+    /// "N.C." names no chord to play, and the site wraps it in `[ch]` like any
+    /// other. Read as lyrics, it would have pushed the line it stands on into
+    /// the song as a line of its own.
+    #[test]
+    fn the_no_chord_mark_is_read_as_a_chord() {
+        let song =
+            parse("[Verse]\r\n[tab][ch]N.C.[/ch]     [ch]Em[/ch]\r\nthe wind knows my name[/tab]");
+
+        let line = &song.parts[0].lines[0];
+        assert_eq!(line.lyrics, "the wind knows my name");
+        assert_eq!(
+            chords(line),
+            [("N.C.".to_string(), 0), ("Em".to_string(), 9)]
+        );
+    }
+
+    /// A song can be credited to more than one artist, and the tab is filed
+    /// under the first of them alone — so `artist_name` named only him, while
+    /// the site's own header prints the whole credit.
+    #[test]
+    fn a_song_is_credited_to_every_artist_the_header_names() {
+        let song = parse_page(&page_of(serde_json::json!({
+            "headerMeta": { "artists": [
+                { "separator": ", ", "name": "Glen Hansard" },
+                { "separator": " & ", "name": "Mark\u{e9}ta Irglov\u{e1}" },
+            ]},
+            "tab": { "song_name": "Falling Slowly", "artist_name": "Glen Hansard" },
+            "tab_view": { "wiki_tab": { "content": "[Verse]\r\n[tab][ch]C[/ch]\r\nand away we go[/tab]" } },
+        })));
+
+        assert_eq!(song.artist, "Glen Hansard & Mark\u{e9}ta Irglov\u{e1}");
+    }
+
+    /// Each artist carries the separator that goes in front of them, which is
+    /// what sets a credit of three apart from a list in one comma.
+    #[test]
+    fn the_credit_is_punctuated_the_way_the_site_punctuates_it() {
+        let song = parse_page(&page_of(serde_json::json!({
+            "headerMeta": { "artists": [
+                { "separator": ", ", "name": "One" },
+                { "separator": ", ", "name": "Two" },
+                { "separator": " & ", "name": "Three" },
+            ]},
+            "tab": { "song_name": "A Song" },
+            "tab_view": { "wiki_tab": { "content": "[Verse]\r\n[tab][ch]C[/ch]\r\nand away we go[/tab]" } },
+        })));
+
+        assert_eq!(song.artist, "One, Two & Three");
+    }
+
+    /// A page that prints no header of its own still has the artist its tab is
+    /// filed under.
+    #[test]
+    fn the_artist_the_tab_is_filed_under_stands_in_for_a_missing_header() {
+        let song = parse("[Verse]\r\n[tab][ch]C[/ch]\r\nand away we go[/tab]");
+
+        assert_eq!(song.artist, "A Band");
     }
 
     #[test]

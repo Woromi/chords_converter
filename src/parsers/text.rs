@@ -197,7 +197,7 @@ impl Header {
             "artist" | "performer" | "band" | "interpret" | "kapela" | "skupina" => {
                 self.artist = value
             }
-            "key" | "tónina" | "tonina" => self.key = Some(value),
+            "key" | "tónina" | "tonina" => self.key = Some(shorten_minor_name(&value)),
             "tempo" | "bpm" => self.tempo = Some(value),
             "tuning" | "ladění" | "ladeni" => self.tuning = Some(value),
             "language" | "lang" | "jazyk" => self.language = Some(value),
@@ -733,6 +733,10 @@ fn is_decoration(token: &str) -> bool {
 /// A chord token is a chord body optionally followed by a `/bass` note. Both
 /// `C/E` and the `C\E` spelling some songbooks use are accepted.
 fn is_chord_token(token: &str) -> bool {
+    if is_no_chord_mark(token) {
+        return true;
+    }
+
     let mut segments = token.split(is_bass_separator);
     match segments.next() {
         Some(main) if is_chord_body(main) => {}
@@ -744,6 +748,16 @@ fn is_chord_token(token: &str) -> bool {
 
 fn is_bass_separator(c: char) -> bool {
     c == '/' || c == '\\'
+}
+
+/// Recognises the "no chord" mark. Whoever writes a sheet writes it with as
+/// many of its dots as they feel like, and now and then with a slash where a
+/// dot should be — which is why it is read off the whole token, before the
+/// `/bass` of a chord is looked for in it.
+fn is_no_chord_mark(token: &str) -> bool {
+    const SPELLINGS: [&str; 4] = ["n.c.", "n.c", "n/c", "nc"];
+
+    SPELLINGS.contains(&token.to_lowercase().as_str())
 }
 
 /// A chord body is a known root followed only by chord-quality characters.
@@ -806,6 +820,10 @@ fn parse_chord_line(line: &str) -> Vec<PlacedChord> {
 /// The website parsers reach for it wherever their page hands them a chord
 /// as one string, so that "Hmi7/Fis" is read apart the same way everywhere.
 pub(super) fn parse_chord(s: &str) -> Chord {
+    if is_no_chord_mark(s.trim()) {
+        return Chord::no_chord();
+    }
+
     let (main_part, bass) = match s.find(is_bass_separator) {
         Some(pos) => {
             let bass = s[pos + 1..].trim();
@@ -835,11 +853,64 @@ pub(super) fn parse_chord(s: &str) -> Chord {
         }
     };
 
-    Chord {
+    shorten_minor(Chord {
         root,
         modifier,
         bass,
+    })
+}
+
+/// Czech songbooks name a minor chord "Emi" where the rest of the world names
+/// it "Em", and every site read here writes it the Czech way. Nothing but the
+/// spelling differs, so the short one is settled on as the chord is read and
+/// no printer ever sees the long one.
+///
+/// A chord carries its minor in either of two places — behind the root, and
+/// behind the slash in the bass note of "F#/Hmi".
+pub(super) fn shorten_minor(chord: Chord) -> Chord {
+    Chord {
+        root: chord.root,
+        modifier: chord
+            .modifier
+            .map(|modifier| match shortened_quality(&modifier) {
+                Some(short) => short,
+                None => modifier,
+            }),
+        bass: chord.bass.map(|bass| shorten_minor_name(&bass)),
     }
+}
+
+/// The same for a chord written out in full rather than read apart: a bass
+/// note, or the key a page names the song's.
+pub(super) fn shorten_minor_name(name: &str) -> String {
+    let name = name.trim();
+    match match_root(name).and_then(|root| {
+        shortened_quality(&name[root.len()..]).map(|quality| format!("{}{}", root, quality))
+    }) {
+        Some(shortened) => shortened,
+        None => name.to_string(),
+    }
+}
+
+/// Shortens the "mi" of a chord's quality to "m", where that is what it is.
+///
+/// This reads what stands behind the root, never the chord itself: "mi" names
+/// a minor chord only directly behind one, and a bare "mi" in a line of lyrics
+/// is the Czech for "me".
+fn shortened_quality(quality: &str) -> Option<String> {
+    // "min" is the same word written a letter further.
+    let rest = quality
+        .strip_prefix("min")
+        .or_else(|| quality.strip_prefix("mi"))?;
+
+    // What follows has to belong to the chord — an added note, an accidental,
+    // a bracket — or there has to be nothing at all. A letter would mean the
+    // "mi" opened a word of its own, the "maj" of a minor-major chord aside.
+    if rest.starts_with(|c: char| c.is_ascii_alphabetic()) && !rest.starts_with("maj") {
+        return None;
+    }
+
+    Some(format!("m{}", rest))
 }
 
 #[cfg(test)]
@@ -1003,5 +1074,101 @@ mod tests {
 
         assert!(matches!(song.parts[0].part_type, PartType::Verse));
         assert_eq!(song.parts[0].lines[0].lyrics, "Chorus of angels sing");
+    }
+
+    /// Writes a chord out the way the printers do, to read its pieces back.
+    fn spelled(chord: &str) -> String {
+        let chord = parse_chord(chord);
+        let mut name = chord.root;
+        name.push_str(chord.modifier.as_deref().unwrap_or(""));
+        if let Some(bass) = chord.bass {
+            name.push('/');
+            name.push_str(&bass);
+        }
+        name
+    }
+
+    #[test]
+    fn the_czech_minor_is_read_as_the_short_one() {
+        assert_eq!(spelled("Emi"), "Em");
+        assert_eq!(spelled("Ami7"), "Am7");
+        assert_eq!(spelled("Hmi7"), "Hm7");
+        assert_eq!(spelled("C#mi9"), "C#m9");
+        assert_eq!(spelled("Cismi"), "Cism");
+        // "min" is the same word written a letter further.
+        assert_eq!(spelled("Dmin"), "Dm");
+        assert_eq!(spelled("Dmin7"), "Dm7");
+        // A minor-major keeps its "maj" and gives up only the "mi".
+        assert_eq!(spelled("Cmimaj7"), "Cmmaj7");
+    }
+
+    #[test]
+    fn a_bass_note_gives_its_minor_up_too() {
+        assert_eq!(spelled("Hmi7/Fis"), "Hm7/Fis");
+        assert_eq!(spelled("F#/Hmi"), "F#/Hm");
+    }
+
+    #[test]
+    fn a_chord_that_never_was_minor_is_left_as_it_was() {
+        for chord in [
+            "Em", "Am7", "Cmaj7", "C", "Fis", "Bb", "Dsus4", "Gadd9", "D/F#",
+        ] {
+            assert_eq!(spelled(chord), chord, "{} was not left alone", chord);
+        }
+    }
+
+    /// "N.C." — *no chord* — is written where a chord would stand and is read
+    /// as one, so that the line it is on still reads as a line of chords and
+    /// it still keeps the column it was written in.
+    #[test]
+    fn the_no_chord_mark_is_read_as_a_chord() {
+        let song = parse("Em      N.C.      G\nthe wind knows my name\n");
+        let line = &song.parts[0].lines[0];
+
+        assert_eq!(line.lyrics, "the wind knows my name");
+        assert_eq!(chords(line), ["Em", "N.C.", "G"]);
+        assert_eq!(columns(line), [0, 8, 18]);
+    }
+
+    /// A bar played on nothing at all is a line of its own, and there is no
+    /// chord on it to make it one.
+    #[test]
+    fn a_line_holding_nothing_but_the_mark_is_still_a_chord_line() {
+        let song = parse("[Bridge]\n| N.C. |\n\nlyrics\n");
+
+        let line = &song.parts[0].lines[0];
+        assert_eq!(chords(line), ["N.C."]);
+        // The bars stay; the mark is taken out from between them like a chord.
+        assert_eq!(line.lyrics.trim_end(), "|      |");
+    }
+
+    /// The mark is written with as many of its dots as whoever wrote the sheet
+    /// felt like — and all of them mean the one thing.
+    #[test]
+    fn the_mark_is_read_however_it_is_spelled() {
+        for spelling in ["N.C.", "N.C", "NC", "N/C", "n.c."] {
+            let chord = parse_chord(spelling);
+            assert!(chord.is_no_chord(), "{} was not read as no chord", spelling);
+            assert_eq!(spelled(spelling), "N.C.");
+        }
+    }
+
+    /// A word of the lyrics is not the mark, however it starts.
+    #[test]
+    fn a_word_that_merely_opens_with_an_n_is_left_to_the_lyrics() {
+        let song = parse("       G\nNo chord and no name\n");
+
+        assert_eq!(song.parts[0].lines[0].lyrics, "No chord and no name");
+        assert_eq!(chords(&song.parts[0].lines[0]), ["G"]);
+    }
+
+    /// The shortening reads what stands behind a root, never a line of its
+    /// own: "mi" is the Czech for "me" and turns up in the lyrics constantly.
+    #[test]
+    fn a_mi_in_the_lyrics_is_no_chord() {
+        let song = parse("       Ami\nona mi zmizela\n");
+
+        assert_eq!(song.parts[0].lines[0].lyrics, "ona mi zmizela");
+        assert_eq!(spelled("Ami"), "Am");
     }
 }

@@ -1,5 +1,5 @@
 use super::SongParser;
-use super::text::parse_body;
+use super::text::{parse_body, shorten_minor_name};
 use crate::models::Song;
 use scraper::{Html, Selector};
 
@@ -47,7 +47,7 @@ impl SongParser for PisnickyAkordyCzParser {
             .and_then(|el| el.value().attr("value"))
             .map(str::trim)
             .filter(|key| !key.is_empty())
-            .map(str::to_string);
+            .map(shorten_minor_name);
 
         Song {
             title: text_of("#songheader h1").unwrap_or_else(|| "Unknown Title".to_string()),
@@ -138,6 +138,15 @@ mod tests {
         assert!(matches!(song.parts[0].part_type, PartType::Verse));
     }
 
+    /// The page names the key the same way it names a chord.
+    #[test]
+    fn a_minor_key_is_named_the_short_way() {
+        let page = page("~ Ami\n1. Spatřil jsem kometu").replace("value=\"A\"", "value=\"Ami\"");
+        let song = PisnickyAkordyCzParser.parse("https://pisnicky-akordy.cz/a-band/a-song", &page);
+
+        assert_eq!(song.key.as_deref(), Some("Am"));
+    }
+
     #[test]
     fn a_chord_keeps_the_column_it_is_played_in() {
         let song = parse(
@@ -152,7 +161,7 @@ mod tests {
         // "1. " gave its columns up, but the sheet's own margin went with it.
         assert_eq!(
             chords(&lines[0]),
-            [("Ami".to_string(), 2), ("Dmi".to_string(), 17)]
+            [("Am".to_string(), 2), ("Dm".to_string(), 17)]
         );
         assert_eq!(lines[1].lyrics, "chtěl jsem jí zazpívat, ona mi zmizela,");
         assert_eq!(chords(&lines[1]), [("C".to_string(), 2)]);
@@ -177,7 +186,7 @@ mod tests {
             names,
             [
                 ("Cis".to_string(), None, None),
-                ("H".to_string(), Some("mi7".to_string()), None),
+                ("H".to_string(), Some("m7".to_string()), None),
                 ("D".to_string(), None, Some("Fis".to_string())),
             ]
         );
@@ -204,7 +213,7 @@ mod tests {
         let interlude = &song.parts[0].lines[1];
         assert_eq!(
             chords(interlude),
-            [("Dmi".to_string(), 2), ("E".to_string(), 6)]
+            [("Dm".to_string(), 2), ("E".to_string(), 6)]
         );
         assert_eq!(interlude.lyrics.trim(), "(       )");
     }

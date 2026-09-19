@@ -34,7 +34,11 @@ which is where the chords, the sections and the tablature are read. What one
 parser learns to read, all four can.
 
 Ultimate Guitar keeps the sheet in a JSON blob the page ships for its own
-scripts, not in the HTML, so the parser reads it from there. It also turns away
+scripts, not in the HTML, so the parser reads it from there. The capo, the
+tuning and the key are kept beside the sheet rather than in it — the site
+prints them in the header above it, and a tab whose remark never mentions a
+capo is played with one all the same — so the header is read first and the
+tabber's remark only fills in what it left out. It also turns away
 anything that does not look like a browser, which is why pages are fetched with
 the headers one sends, a cookie jar and a couple of retries. Should a page still
 come back as a bot check, open it in a browser, save it and pass the saved file:
@@ -110,7 +114,19 @@ together.
 
 Both standard (`C#m7`) and Czech (`Cis`, `Dmi`, `As`) chord names are
 recognised, with the bass note written either `C/E` or `C\E`. Bar lines and
-repeat marks (`|`, `:||`, `x2`) may share a line with chords. Tabs are expanded
+repeat marks (`|`, `:||`, `x2`) may share a line with chords. `N.C.` — *no
+chord*, the mark for a passage that goes on with none under it — is read as a
+chord of its own, so the line it stands on still reads as a line of chords and
+it keeps the column it was written in; however it is spelled (`N.C`, `NC`,
+`N/C`), LaTeX gets it as `\[\nochord]`.
+
+A minor chord is written out the short way whatever the source called it:
+`Emi`, `Dmin` and `Em` all come out as `Em`, `Hmi7/Fis` as `Hm7/Fis`, and the
+key the page names the song's is shortened with them. Only the "mi" goes — the
+root is left as the source spelled it, so `Cis` stays `Cis` and `H` stays `H` —
+and it only goes where it stands directly behind a root, which leaves the `mi`
+of the lyrics alone. A chord keeps the column it was written in, so shortening
+its name does not move it off the syllable it is sung on. Tabs are expanded
 to 8-column tab stops, so a chord line indented with tabs still lines up with
 the lyrics below it.
 

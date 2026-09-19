@@ -1,5 +1,5 @@
 use super::SongParser;
-use super::text::parse_chord;
+use super::text::{parse_chord, shorten_minor};
 use crate::models::{Chord, Line, Part, PartType, PlacedChord, Song};
 use scraper::{ElementRef, Html, Selector, node::Node};
 
@@ -210,11 +210,11 @@ fn parse_chord_span(chord_el: ElementRef) -> Chord {
     };
 
     match piece(&chk_sel) {
-        Some(root) => Chord {
+        Some(root) => shorten_minor(Chord {
             root,
             modifier: piece(&chv_sel),
             bass: piece(&chb_sel),
-        },
+        }),
         None => parse_chord(chord_el.text().collect::<String>().trim()),
     }
 }
@@ -326,6 +326,22 @@ mod tests {
                 ("G7".to_string(), 8)
             ]
         );
+    }
+
+    /// The site sets the root and what follows it in spans of their own, so
+    /// this chord never passes through the text parser and has to be
+    /// shortened where it is built.
+    #[test]
+    fn a_minor_written_out_in_its_own_span_is_shortened() {
+        let song = parse(
+            "",
+            &format!(
+                "<div class=\"scs-section\" data-type=\"verse\"><div>{}Spatřil jsem</div></div>",
+                chord("A", "mi7")
+            ),
+        );
+
+        assert_eq!(names(&song.parts[0].lines[0]), [("Am7".to_string(), 0)]);
     }
 
     #[test]
