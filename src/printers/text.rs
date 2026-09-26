@@ -23,6 +23,9 @@ impl SongPrinter for TextPrinter {
         if let Some(tuning) = &song.tuning {
             writeln!(writer, "Tuning:   {}", tuning)?;
         }
+        if let Some(meter) = &song.meter {
+            writeln!(writer, "Meter:    {}", meter)?;
+        }
         if let Some(capo) = &song.capo {
             writeln!(writer, "Capo:     {}", capo)?;
         }

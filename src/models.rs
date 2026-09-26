@@ -6,6 +6,8 @@ pub struct Song {
     pub source_website: String,
     pub key: Option<String>,
     pub tempo: Option<String>,
+    /// Time signature, as `3/4`.
+    pub meter: Option<String>,
     pub language: Option<String>,
     pub tuning: Option<String>,
     pub capo: Option<u8>,

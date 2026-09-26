@@ -55,6 +55,7 @@ impl SongParser for PisnickyAkordyCzParser {
             source_website: url.to_string(),
             key,
             tempo: None,    // Not provided by the site.
+            meter: None,    // Not provided by the site.
             language: None, // Not provided by the site, probably Czech.
             tuning: None,   // Not provided by the site.
             capo: None,     // Not provided by the site.

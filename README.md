@@ -25,7 +25,7 @@ cargo run -- - latex
 | `akordy.kytary.cz` | capo |
 | `pisnicky-akordy.cz` | key |
 | `blivnik.cz` | capo, chord diagrams, the date the sheet was added, the writer's remark |
-| `ultimate-guitar.com` | key, capo, tuning, the tabber's opening remark |
+| `ultimate-guitar.com` | key, capo, tuning, a tempo or time signature the tabber's remark names, the remark itself |
 
 However differently the four sites store a song, underneath it is the same
 "chords over lyrics" layout — so each parser only undoes what its site did to
@@ -132,8 +132,9 @@ the lyrics below it.
 
 The header is only read when the first line is underlined with `===` or
 followed by metadata. Every `Label: value` line in that block is kept: the
-labels the song model knows (`title`, `artist`, `key`, `tempo`, `tuning`,
-`capo`, `language`, `source`, plus Czech equivalents) fill in its fields, the
+labels the song model knows (`title`, `artist`, `key`, `tempo`, `meter` or
+`time signature`, `tuning`, `capo`, `language`, `source`, plus Czech
+equivalents) fill in its fields, the
 rest (`Year`, `Album`, `Writers`, ...) are carried through to the output — as
 commented-out keys in LaTeX.
 

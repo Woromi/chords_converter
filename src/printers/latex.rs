@@ -18,6 +18,10 @@ impl SongPrinter for LatexPrinter {
             Some(tempo) => writeln!(writer, "    tem={{{}}},", escape(tempo))?,
             None => writeln!(writer, "    % tem={{}},")?,
         }
+        match &song.meter {
+            Some(meter) => writeln!(writer, "    met={{{}}},", escape(meter))?,
+            None => writeln!(writer, "    % met={{}},")?,
+        }
         match &song.tuning {
             Some(tuning) => writeln!(writer, "    tun={{{}}},", escape(tuning))?,
             None => writeln!(writer, "    tun={{Standard}},")?,
@@ -25,6 +29,10 @@ impl SongPrinter for LatexPrinter {
         match &song.key {
             Some(key) => writeln!(writer, "    key={{{}}},", escape_key(key))?,
             None => writeln!(writer, "    % key={{}},")?,
+        }
+        match &song.capo {
+            None | Some(0) => writeln!(writer, "    % cap={{}},")?,
+            Some(capo) => writeln!(writer, "    cap={{{}}},", capo)?,
         }
         writeln!(writer, "    src={{{}}},", escape(&song.source_website))?;
         // Metadata the song format has no key for is kept as a comment.
@@ -37,10 +45,6 @@ impl SongPrinter for LatexPrinter {
             )?;
         }
         writeln!(writer, "]")?;
-        match &song.capo {
-            None | Some(0) => writeln!(writer, "% \\capo{{}}")?,
-            Some(capo) => writeln!(writer, "\\capo{{{}}}", capo)?,
-        }
         writeln!(writer)?;
 
         // 2. Iterate through parts
@@ -489,5 +493,42 @@ mod tests {
         assert_eq!(flat_note("Es"), "Es");
         assert_eq!(flat_degrees("sus4"), "sus4");
         assert_eq!(flat_degrees("mi"), "mi");
+    }
+
+    fn song(meter: Option<&str>, capo: Option<u8>) -> Song {
+        Song {
+            title: "T".to_string(),
+            artist: "A".to_string(),
+            source_website: "https://example.org".to_string(),
+            key: None,
+            tempo: None,
+            meter: meter.map(str::to_string),
+            language: None,
+            tuning: None,
+            capo,
+            extra: Vec::new(),
+            parts: Vec::new(),
+        }
+    }
+
+    fn header(song: &Song) -> String {
+        let mut out = Vec::new();
+        LatexPrinter.print(song, &mut out).unwrap();
+        String::from_utf8(out).unwrap()
+    }
+
+    #[test]
+    fn meter_and_capo_are_song_keys() {
+        let out = header(&song(Some("3/4"), Some(2)));
+        assert!(out.contains("    met={3/4},\n"));
+        assert!(out.contains("    cap={2},\n"));
+        assert!(!out.contains("\\capo"));
+    }
+
+    #[test]
+    fn a_missing_meter_or_capo_is_left_as_a_comment() {
+        let out = header(&song(None, Some(0)));
+        assert!(out.contains("    % met={},\n"));
+        assert!(out.contains("    % cap={},\n"));
     }
 }

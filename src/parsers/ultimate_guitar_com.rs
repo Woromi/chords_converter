@@ -1,5 +1,5 @@
 use super::SongParser;
-use super::text::{parse_body, shorten_minor_name};
+use super::text::{meter_of, parse_body, shorten_minor_name};
 use crate::models::Song;
 use scraper::{Html, Selector};
 use serde_json::Value;
@@ -91,6 +91,7 @@ impl SongParser for UltimateGuitarComParser {
                 .as_deref()
                 .map(shorten_minor_name),
             tempo: notes.tempo,
+            meter: notes.meter,
             language: None, // Not provided by the site.
             tuning: field("/tab_view/meta/tuning/name")
                 .or_else(|| field("/tab_view/meta/tuning/value"))
@@ -193,6 +194,7 @@ fn split_preamble(content: &str) -> (&str, &str) {
 struct Preamble {
     key: Option<String>,
     tempo: Option<String>,
+    meter: Option<String>,
     tuning: Option<String>,
     capo: Option<u8>,
     note: Option<String>,
@@ -218,6 +220,7 @@ impl Preamble {
                     "capo" => preamble.capo = leading_number(value),
                     "tuning" => preamble.tuning = Some(value.to_string()),
                     "tempo" | "bpm" => preamble.tempo = Some(value.to_string()),
+                    "time" | "time signature" | "meter" => preamble.meter = meter_of(value),
                     _ => preamble.key = Some(value.to_string()),
                 }
                 continue;
@@ -249,7 +252,9 @@ fn is_rule(line: &str) -> bool {
 /// Reads a `Capo: 2nd fret` line as a `(label, value)` pair, ignoring labels
 /// the song model has no room for.
 fn labelled(line: &str) -> Option<(String, &str)> {
-    const LABELS: [&str; 6] = ["capo", "tuning", "key", "tonality", "tempo", "bpm"];
+    const LABELS: [&str; 9] = [
+        "capo", "tuning", "key", "tonality", "tempo", "bpm", "time", "time signature", "meter",
+    ];
 
     let (head, value) = line.split_once(':')?;
     let label = head.trim().to_lowercase();

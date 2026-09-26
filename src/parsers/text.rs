@@ -168,6 +168,7 @@ struct Header {
     source_website: String,
     key: Option<String>,
     tempo: Option<String>,
+    meter: Option<String>,
     tuning: Option<String>,
     language: Option<String>,
     capo: Option<u8>,
@@ -182,6 +183,7 @@ impl Header {
             source_website: source.to_string(),
             key: None,
             tempo: None,
+            meter: None,
             tuning: None,
             language: None,
             capo: None,
@@ -199,6 +201,9 @@ impl Header {
             }
             "key" | "tónina" | "tonina" => self.key = Some(shorten_minor_name(&value)),
             "tempo" | "bpm" => self.tempo = Some(value),
+            "meter" | "time" | "time signature" | "metrum" | "takt" | "taktové označení" => {
+                self.meter = meter_of(&value)
+            }
             "tuning" | "ladění" | "ladeni" => self.tuning = Some(value),
             "language" | "lang" | "jazyk" => self.language = Some(value),
             "capo" | "kapo" | "capodastr" => {
@@ -216,6 +221,7 @@ impl Header {
             source_website: self.source_website,
             key: self.key,
             tempo: self.tempo,
+            meter: self.meter,
             language: self.language,
             tuning: self.tuning,
             capo: self.capo,
@@ -223,6 +229,14 @@ impl Header {
             parts,
         }
     }
+}
+
+/// Reads a time signature such as `3/4` or `6 / 8` out of a label's value.
+pub fn meter_of(value: &str) -> Option<String> {
+    let (num, den) = value.split_once('/')?;
+    let num = num.trim().rsplit(|c: char| !c.is_ascii_digit()).next()?;
+    let den = den.trim().split(|c: char| !c.is_ascii_digit()).next()?;
+    (!num.is_empty() && !den.is_empty()).then(|| format!("{}/{}", num, den))
 }
 
 /// Consumes the optional header — an `Artist - Title` line followed either by
@@ -985,6 +999,19 @@ mod tests {
         assert_eq!(part.lines[0].lyrics, "Let it be");
         assert_eq!(chords(&part.lines[0]), ["C", "G"]);
         assert_eq!(columns(&part.lines[0]), [4, 11]);
+    }
+
+    #[test]
+    fn reads_the_meter_out_of_the_header() {
+        let song = parse("Beatles - Let It Be\n===\nTime signature: 3 / 4\n\nlyrics\n");
+
+        assert_eq!(song.meter.as_deref(), Some("3/4"));
+    }
+
+    #[test]
+    fn a_meter_that_is_no_fraction_is_not_read() {
+        assert_eq!(meter_of("waltz"), None);
+        assert_eq!(meter_of("6/8 swing"), Some("6/8".to_string()));
     }
 
     #[test]
