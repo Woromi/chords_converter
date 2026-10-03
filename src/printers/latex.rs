@@ -1,5 +1,6 @@
 use super::SongPrinter;
 use crate::models::{Chord, Line, Part, PartType, Song};
+use crate::parsers::text::is_unsung;
 use std::io::Write;
 
 pub struct LatexPrinter;
@@ -50,7 +51,14 @@ impl SongPrinter for LatexPrinter {
         // 2. Iterate through parts
         for part in &song.parts {
             // Open the correct environment based on the part type
+            // An intro of chords alone is played, not sung, so it is set as
+            // the instrumental it is; the song itself still calls it an intro.
+            let chords_only = part.lines.iter().all(is_unsung);
             let env_close_str = match &part.part_type {
+                PartType::Intro if chords_only => {
+                    writeln!(writer, "\\begininstrumental")?;
+                    "\\endinstrumental"
+                }
                 PartType::Intro => {
                     writeln!(writer, "\\beginintro")?;
                     "\\endintro"
@@ -311,8 +319,8 @@ fn escape_key(key: &str) -> String {
             && (prev.is_some_and(|p: char| p.is_ascii_uppercase())
                 || chars.peek().is_some_and(|n| n.is_ascii_digit()));
         match c {
-            _ if is_flat => out.push_str("\\flt{}"),
-            '#' => out.push_str("\\shrp{}"),
+            _ if is_flat => out.push_str("\\flt "),
+            '#' => out.push_str("\\shrp "),
             _ => escape_char(c, &mut out),
         }
         prev = Some(c);
@@ -478,9 +486,9 @@ mod tests {
 
     #[test]
     fn the_key_spells_its_accidentals_out() {
-        assert_eq!(escape_key("Ab"), "A\\flt{}");
-        assert_eq!(escape_key("F#mi"), "F\\shrp{}mi");
-        assert_eq!(escape_key("Bbmaj7"), "B\\flt{}maj7");
+        assert_eq!(escape_key("Ab"), "A\\flt ");
+        assert_eq!(escape_key("F#mi"), "F\\shrp mi");
+        assert_eq!(escape_key("Bbmaj7"), "B\\flt maj7");
         assert_eq!(escape_key("H"), "H");
         assert_eq!(escape_key("bez akordů"), "bez akordů");
     }
@@ -530,5 +538,36 @@ mod tests {
         let out = header(&song(None, Some(0)));
         assert!(out.contains("    % met={},\n"));
         assert!(out.contains("    % cap={},\n"));
+    }
+
+    #[test]
+    fn an_intro_of_chords_alone_is_set_as_an_instrumental() {
+        let line = |lyrics: &str| Line {
+            lyrics: lyrics.to_string(),
+            chords: vec![PlacedChord {
+                chord: Chord {
+                    root: "C".to_string(),
+                    modifier: None,
+                    bass: None,
+                },
+                position: 0,
+            }],
+        };
+        let mut song = song(None, None);
+        song.parts = vec![
+            Part {
+                part_type: PartType::Intro,
+                lines: vec![line("| x2")],
+            },
+            Part {
+                part_type: PartType::Intro,
+                lines: vec![line("La la la")],
+            },
+        ];
+
+        let out = header(&song);
+        assert_eq!(out.matches("\\begininstrumental").count(), 1);
+        assert_eq!(out.matches("\\beginintro").count(), 1);
+        assert!(out.find("\\begininstrumental") < out.find("\\beginintro"));
     }
 }

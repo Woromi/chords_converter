@@ -2,7 +2,7 @@
 
 ## Usage
 The first argument is the input source, the second (optional) is the output
-format (`text`, `latex`, `debug`; defaults to `text`). Output is written to
+format (`text`, `latex`, `debug`; defaults to `latex`). Output is written to
 `out/<format>/<artist>/<title>.<ext>`.
 
 ```

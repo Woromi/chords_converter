@@ -417,7 +417,7 @@ fn flush_part(
 
 /// A line with nothing to sing — bar lines and repeat marks are all that is
 /// left of it once the chords are taken out.
-fn is_unsung(line: &Line) -> bool {
+pub(crate) fn is_unsung(line: &Line) -> bool {
     tokenize(&line.lyrics)
         .into_iter()
         .all(|(_, token)| is_decoration(token))

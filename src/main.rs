@@ -305,12 +305,12 @@ async fn main() {
         eprintln!("  <URL>   Fetch and parse a supported website");
         eprintln!("  <FILE>  Parse a local text file (chords over lyrics) or a saved page");
         eprintln!("  -       Read chords from standard input (paste, then Ctrl-D)");
-        eprintln!("Output Formats: text, latex, debug (default: text)");
+        eprintln!("Output Formats: text, latex, debug (default: latex)");
         std::process::exit(1);
     }
 
     let input_arg = &args[1];
-    let format_arg = if args.len() > 2 { args[2].as_str() } else { "text" };
+    let format_arg = if args.len() > 2 { args[2].as_str() } else { "latex" };
 
     let printer = match printers::get_printer(format_arg) {
         Ok(p) => p,
