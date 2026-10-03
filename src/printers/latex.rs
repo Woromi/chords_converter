@@ -46,6 +46,7 @@ impl SongPrinter for LatexPrinter {
             )?;
         }
         writeln!(writer, "]")?;
+        writeln!(writer, "\\MultiwordChords")?;
         writeln!(writer)?;
 
         // 2. Iterate through parts
