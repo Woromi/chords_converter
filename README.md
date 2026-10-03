@@ -26,12 +26,18 @@ cargo run -- - latex
 | `pisnicky-akordy.cz` | key |
 | `blivnik.cz` | capo, chord diagrams, the date the sheet was added, the writer's remark |
 | `ultimate-guitar.com` | key, capo, tuning, a tempo or time signature the tabber's remark names, the remark itself |
+| `guitartuna.com` | key, tempo, time signature, tuning, capo |
 
-However differently the four sites store a song, underneath it is the same
+However differently the five sites store a song, underneath it is the same
 "chords over lyrics" layout — so each parser only undoes what its site did to
 it (its markup, its brackets, its JSON) and hands the sheet to the text parser,
 which is where the chords, the sections and the tablature are read. What one
-parser learns to read, all four can.
+parser learns to read, all five can.
+
+GuitarTuna lays a song out by the beat rather than by the column, so there is
+no sheet to read off the page as it stands. It does, however, write every chord
+into the lyrics for screen readers, right where the chord is played — and that
+is the column the parser writes it back out in.
 
 Ultimate Guitar keeps the sheet in a JSON blob the page ships for its own
 scripts, not in the HTML, so the parser reads it from there. The capo, the

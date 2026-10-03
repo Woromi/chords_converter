@@ -2,6 +2,7 @@ use crate::models::Song;
 use scraper::{Html, Selector};
 
 pub mod blivnik_cz;
+pub mod guitartuna_com;
 pub mod kytary_cz;
 pub mod pisnicky_akody_cz;
 pub mod text;
@@ -21,6 +22,8 @@ pub fn get_parser(url: &str) -> Result<Box<dyn SongParser>, String> {
         Ok(Box::new(blivnik_cz::BlivnikCzParser))
     } else if url.contains("ultimate-guitar.com") {
         Ok(Box::new(ultimate_guitar_com::UltimateGuitarComParser))
+    } else if url.contains("guitartuna.com") {
+        Ok(Box::new(guitartuna_com::GuitarTunaComParser))
     } else {
         Err(format!("No parser available for URL: {}", url))
     }
@@ -39,6 +42,8 @@ pub fn sniff_parser(html_content: &str) -> Option<Box<dyn SongParser>> {
         Some(Box::new(blivnik_cz::BlivnikCzParser))
     } else if html_content.contains("songtext") && html_content.contains("aline") {
         Some(Box::new(pisnicky_akody_cz::PisnickyAkordyCzParser))
+    } else if html_content.contains("song-lyrics") && html_content.contains("part_type") {
+        Some(Box::new(guitartuna_com::GuitarTunaComParser))
     } else {
         None
     }
