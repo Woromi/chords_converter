@@ -37,8 +37,7 @@ fn sanitize_filename(name: &str) -> String {
 /// A current desktop browser. Several of the supported sites — ultimate-guitar
 /// .com above all — answer a request that does not look like one with a bot
 /// check instead of the song.
-const USER_AGENT: &str =
-    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) \
+const USER_AGENT: &str = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) \
      Chrome/124.0.0.0 Safari/537.36";
 
 /// How often a request is retried when the site turns it away. The blocking is
@@ -258,7 +257,11 @@ fn parse_file(path: &str, content: &str) -> Result<Song, String> {
 
 /// Tells a saved page from a song written out as text.
 fn looks_like_html(content: &str) -> bool {
-    let head: String = content.chars().take(2000).collect::<String>().to_lowercase();
+    let head: String = content
+        .chars()
+        .take(2000)
+        .collect::<String>()
+        .to_lowercase();
     head.contains("<!doctype html") || head.contains("<html")
 }
 
@@ -329,7 +332,10 @@ fn save_song(
         Output::Stdout => {
             let mut stdout = std::io::stdout().lock();
             // A reader that stops early (`| head`) has all it wanted.
-            return match printer.print(song, &mut stdout).and_then(|_| stdout.flush()) {
+            return match printer
+                .print(song, &mut stdout)
+                .and_then(|_| stdout.flush())
+            {
                 Err(e) if e.kind() != std::io::ErrorKind::BrokenPipe => {
                     Err(format!("Failed to write the song: {}", e))
                 }
@@ -463,7 +469,8 @@ async fn main() {
     };
 
     let result = async {
-        let printer = printers::get_printer(&format).map_err(|e| format!("Printer Error: {}", e))?;
+        let printer =
+            printers::get_printer(&format).map_err(|e| format!("Printer Error: {}", e))?;
         let song = acquire_song(&source).await?;
         save_song(&song, &format, printer.as_ref(), &output)
     }
@@ -552,12 +559,23 @@ mod tests {
     #[test]
     fn convert_takes_options_in_any_order() {
         assert_eq!(
-            parse_args(&args(&["convert", "-o", "-", "page.html", "--format", "text"])),
+            parse_args(&args(&[
+                "convert",
+                "-o",
+                "-",
+                "page.html",
+                "--format",
+                "text"
+            ])),
             Ok(convert("page.html", "text", Output::Stdout))
         );
         assert_eq!(
             parse_args(&args(&["convert", "page.html", "-o", "x/Song.tex"])),
-            Ok(convert("page.html", "latex", Output::File("x/Song.tex".into())))
+            Ok(convert(
+                "page.html",
+                "latex",
+                Output::File("x/Song.tex".into())
+            ))
         );
         // A lone dash is the pasted song.
         assert_eq!(

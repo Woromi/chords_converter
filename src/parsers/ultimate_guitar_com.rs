@@ -208,10 +208,7 @@ impl Preamble {
         for line in text.lines() {
             let line = line.trim();
             // The title and the rule under it are a heading, not a remark.
-            if line.is_empty()
-                || line.eq_ignore_ascii_case(title)
-                || is_rule(line)
-            {
+            if line.is_empty() || line.eq_ignore_ascii_case(title) || is_rule(line) {
                 continue;
             }
 
@@ -253,7 +250,15 @@ fn is_rule(line: &str) -> bool {
 /// the song model has no room for.
 fn labelled(line: &str) -> Option<(String, &str)> {
     const LABELS: [&str; 9] = [
-        "capo", "tuning", "key", "tonality", "tempo", "bpm", "time", "time signature", "meter",
+        "capo",
+        "tuning",
+        "key",
+        "tonality",
+        "tempo",
+        "bpm",
+        "time",
+        "time signature",
+        "meter",
     ];
 
     let (head, value) = line.split_once(':')?;
@@ -346,12 +351,17 @@ mod tests {
         assert_eq!(song.title, "A Song");
         assert_eq!(song.artist, "A Band");
         assert_eq!(song.key.as_deref(), Some("Em"));
-        assert!(song.extra.contains(&("Difficulty".to_string(), "novice".to_string())));
+        assert!(
+            song.extra
+                .contains(&("Difficulty".to_string(), "novice".to_string()))
+        );
     }
 
     #[test]
     fn stripping_the_markup_leaves_the_chords_in_their_columns() {
-        let song = parse("[Verse 1]\r\n[tab][ch]Em[/ch]      [ch]D/F#[/ch]\r\nthe wind knows my name[/tab]");
+        let song = parse(
+            "[Verse 1]\r\n[tab][ch]Em[/ch]      [ch]D/F#[/ch]\r\nthe wind knows my name[/tab]",
+        );
 
         let line = &song.parts[0].lines[0];
         assert_eq!(line.lyrics, "the wind knows my name");
@@ -488,7 +498,8 @@ mod tests {
 
     #[test]
     fn a_page_carrying_no_song_still_parses() {
-        let song = UltimateGuitarComParser.parse("https://tabs.ultimate-guitar.com/", "<html></html>");
+        let song =
+            UltimateGuitarComParser.parse("https://tabs.ultimate-guitar.com/", "<html></html>");
 
         assert_eq!(song.title, "Unknown Title");
         assert!(song.parts.is_empty());

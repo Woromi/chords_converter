@@ -246,9 +246,7 @@ enum BarToken {
 
 /// The count of a repeat mark: `x2`, `2x`, `3×`, in brackets or not.
 fn repeat_count(token: &str) -> Option<u32> {
-    let lower = token
-        .trim_matches(['(', ')', '[', ']'])
-        .to_lowercase();
+    let lower = token.trim_matches(['(', ')', '[', ']']).to_lowercase();
     let digits = lower.trim_start_matches('x').trim_end_matches(['x', '×']);
     if digits.len() == lower.len() || digits.is_empty() {
         return None;
@@ -284,7 +282,11 @@ impl QuoteMark {
 /// rest of the song. When the part holds an odd number of marks, the last one
 /// is the one left without a partner, and it stays a plain mark.
 fn quote_marks(part: &Part) -> Vec<Vec<QuoteMark>> {
-    let total: usize = part.lines.iter().map(|l| l.lyrics.matches('"').count()).sum();
+    let total: usize = part
+        .lines
+        .iter()
+        .map(|l| l.lyrics.matches('"').count())
+        .sum();
     let mut seen = 0;
     part.lines
         .iter()
@@ -641,7 +643,11 @@ mod tests {
         for lyrics in ["\"a", "\"a\" \"b", "a\" b\" c\"", "\"\"\""] {
             let part = verse(vec![line(lyrics, &[]), line("x\"", &[])]);
             let text = render(&part).join("\n");
-            assert_eq!(text.matches('{').count(), text.matches('}').count(), "{text}");
+            assert_eq!(
+                text.matches('{').count(),
+                text.matches('}').count(),
+                "{text}"
+            );
         }
     }
 
@@ -655,7 +661,10 @@ mod tests {
 
     #[test]
     fn chords_keep_their_place_where_no_quotation_is_in_the_way() {
-        let part = verse(vec![line("She calls out to the man", &[(0, "Em"), (10, "D")])]);
+        let part = verse(vec![line(
+            "She calls out to the man",
+            &[(0, "Em"), (10, "D")],
+        )]);
         assert_eq!(render(&part), ["\\[Em]She calls \\[D]out to the man"]);
     }
 
@@ -874,7 +883,10 @@ mod tests {
     fn a_row_is_repeated_once_however_often_it_says_so() {
         let outro = part(
             PartType::Outro,
-            vec![line("|     |      | x2", &[(2, "C"), (8, "G")]), line("3x", &[])],
+            vec![
+                line("|     |      | x2", &[(2, "C"), (8, "G")]),
+                line("3x", &[]),
+            ],
         );
         assert_eq!(
             body(vec![outro]),
@@ -897,7 +909,10 @@ mod tests {
     #[test]
     fn a_sung_intro_stays_an_intro() {
         let intro = part(PartType::Intro, vec![line("La la", &[(0, "C")])]);
-        assert_eq!(body(vec![intro]), "\\beginintro\n    \\[C]La la\n\\endintro\n\n");
+        assert_eq!(
+            body(vec![intro]),
+            "\\beginintro\n    \\[C]La la\n\\endintro\n\n"
+        );
     }
 
     #[test]
@@ -908,7 +923,10 @@ mod tests {
 
     #[test]
     fn chords_after_the_last_word_are_one_space_apart() {
-        let part = verse(vec![line("to me   ", &[(3, "E&"), (6, "E&sus4"), (14, "E&")])]);
+        let part = verse(vec![line(
+            "to me   ",
+            &[(3, "E&"), (6, "E&sus4"), (14, "E&")],
+        )]);
         assert_eq!(render(&part), ["to \\[E&]me \\[E&sus4] \\[E&]"]);
     }
 
@@ -921,6 +939,9 @@ mod tests {
     #[test]
     fn part_content_is_indented_and_blank_lines_are_not() {
         let verse = verse(vec![line("one", &[]), line("", &[]), line("two", &[])]);
-        assert_eq!(body(vec![verse]), "\\beginverse\n    one\n\n    two\n\\endverse\n\n");
+        assert_eq!(
+            body(vec![verse]),
+            "\\beginverse\n    one\n\n    two\n\\endverse\n\n"
+        );
     }
 }

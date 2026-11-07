@@ -60,7 +60,12 @@ impl SongParser for GuitarTunaComParser {
 
         // The tempo is printed as "173 BPM"; the number is what is kept.
         let tempo = labelled(&summary, "Tempo")
-            .map(|tempo| tempo.trim_end_matches(|c: char| !c.is_ascii_digit()).trim().to_string())
+            .map(|tempo| {
+                tempo
+                    .trim_end_matches(|c: char| !c.is_ascii_digit())
+                    .trim()
+                    .to_string()
+            })
             .filter(|tempo| !tempo.is_empty());
 
         // Standard tuning is what a song without one is played in anyway.
@@ -207,7 +212,10 @@ fn read_lyrics(el: ElementRef, lyrics: &mut String, marks: &mut Vec<usize>) {
             // The site pads the lyrics out to the width of the beats they
             // span; a run of spaces is one space in the song.
             Node::Text(text) => {
-                for c in text.chars().map(|c| if c.is_whitespace() { ' ' } else { c }) {
+                for c in text
+                    .chars()
+                    .map(|c| if c.is_whitespace() { ' ' } else { c })
+                {
                     if !(c == ' ' && lyrics.ends_with(' ')) {
                         lyrics.push(c);
                     }
@@ -275,7 +283,9 @@ mod tests {
              <h1 data-testid=\"song-title\"><span class=\"font-bold uppercase\">A Song</span> \
              <span>chords by</span> <span><a href=\"/artists/a-band\">A Band</a></span></h1>\
              <div id=\"songcontent\" data-testid=\"song-lyrics\">{}</div></body></html>",
-            parts.concat().replacen("data-pos", "data-time=\"3/4\" data-pos", 1)
+            parts
+                .concat()
+                .replacen("data-pos", "data-time=\"3/4\" data-pos", 1)
         )
     }
 
@@ -339,7 +349,10 @@ mod tests {
     fn chords_on_one_syllable_are_set_side_by_side() {
         let song = parse(&[part(
             "Verse 1",
-            &[line(&["Abmaj7", "Ab6", "Abmaj7"], "with her |casual    lies ||")],
+            &[line(
+                &["Abmaj7", "Ab6", "Abmaj7"],
+                "with her |casual    lies ||",
+            )],
         )]);
 
         assert_eq!(

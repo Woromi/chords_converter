@@ -50,7 +50,10 @@ impl SongParser for KytaryCzParser {
         // chords in the song's own language. Only Czech and Slovak share the
         // site's naming; any other song's chords are renamed to match it.
         let language = parse_language(&document);
-        if language.as_deref().is_some_and(|l| l != "czech" && l != "slovak") {
+        if language
+            .as_deref()
+            .is_some_and(|l| l != "czech" && l != "slovak")
+        {
             for chord in parts
                 .iter_mut()
                 .flat_map(|part| part.lines.iter_mut())
@@ -71,11 +74,11 @@ impl SongParser for KytaryCzParser {
             title,
             artist,
             source_website: url.to_string(),
-            key: None,      // Not provided by the site.
-            tempo: None,    // Not provided by the site.
-            meter: None,    // Not provided by the site.
+            key: None,   // Not provided by the site.
+            tempo: None, // Not provided by the site.
+            meter: None, // Not provided by the site.
             language,
-            tuning: None,   // Not provided by the site.
+            tuning: None, // Not provided by the site.
             capo: parse_capo(&document),
             extra: Vec::new(),
             parts,
