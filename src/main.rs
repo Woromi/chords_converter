@@ -4,8 +4,8 @@ use reqwest::header::{
     ACCEPT, ACCEPT_LANGUAGE, COOKIE, HeaderMap, HeaderValue, UPGRADE_INSECURE_REQUESTS,
 };
 use std::env;
-use std::fs::{self, File};
-use std::io::Read;
+use std::fs;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -223,9 +223,19 @@ fn is_url(input: &str) -> bool {
 
 /// Parses a local file: a page saved from a browser when it is one, the plain
 /// "chords over lyrics" layout otherwise.
-fn parse_file(path: &str, content: &str) -> Song {
+fn parse_file(path: &str, content: &str) -> Result<Song, String> {
     if !looks_like_html(content) {
-        return parsers::text::TextParser.parse(path, content);
+        return Ok(parsers::text::TextParser.parse(path, content));
+    }
+
+    // A page saved while the site was showing its bot check holds no song;
+    // read as one, it would come out as an empty song by "Unknown Artist".
+    if looks_like_a_bot_check(content) {
+        return Err(format!(
+            "'{}' is a bot check the site showed instead of the song, not the song \
+             itself. Save the page again once the song is on screen.",
+            path
+        ));
     }
 
     match parsers::sniff_parser(content) {
@@ -233,7 +243,7 @@ fn parse_file(path: &str, content: &str) -> Song {
             // A saved page has no address of its own; the one it records is
             // worth more to the songbook than the path it was saved to.
             let source = parsers::source_url(content).unwrap_or_else(|| path.to_string());
-            parser.parse(&source, content)
+            Ok(parser.parse(&source, content))
         }
         None => {
             eprintln!(
@@ -241,7 +251,7 @@ fn parse_file(path: &str, content: &str) -> Song {
                  Reading it as plain text.",
                 path
             );
-            parsers::text::TextParser.parse(path, content)
+            Ok(parsers::text::TextParser.parse(path, content))
         }
     }
 }
@@ -260,112 +270,209 @@ fn read_stdin() -> std::io::Result<String> {
     Ok(buffer)
 }
 
-/// Writes the parsed song to out/<format>/<artist>/<title>.<extension>.
-fn save_song(song: &Song, format_arg: &str, printer: &dyn SongPrinter) {
-    // 1. Sanitize folder and filenames
-    let safe_artist = sanitize_filename(&song.artist);
-    let safe_title = sanitize_filename(&song.title);
-    let extension = printer.extension();
-
-    // 2. Build structured path: out/<format>/<artist>/
-    let mut path = PathBuf::from("out");
-    path.push(format_arg);
-    path.push(&safe_artist);
-
-    // 3. Ensure the nested directories exist
-    if let Err(e) = fs::create_dir_all(&path) {
-        eprintln!("Failed to create directories: {}", e);
-        std::process::exit(1);
+/// Reads the song from wherever the source names: pasted text, a website or
+/// a local file.
+async fn acquire_song(input: &str) -> Result<Song, String> {
+    if input == "-" || input == "--paste" {
+        let text = read_stdin().map_err(|e| format!("Failed to read from stdin: {}", e))?;
+        return Ok(parsers::text::TextParser.parse("(pasted)", &text));
     }
+    if is_url(input) {
+        let parser = parsers::get_parser(input).map_err(|e| format!("Parser Error: {}", e))?;
+        let html = fetch_html(input).await?;
+        return Ok(parser.parse(input, &html));
+    }
+    if !Path::new(input).is_file() {
+        return Err(format!(
+            "Input Error: '{}' is not a URL, not '-', and not an existing file.",
+            input
+        ));
+    }
+    let text =
+        fs::read_to_string(input).map_err(|e| format!("Failed to read file '{}': {}", input, e))?;
+    parse_file(input, &text)
+}
 
-    // 4. Append the actual filename: <title>.<extension>
-    path.push(format!("{}.{}", safe_title, extension));
+/// Where the converted song goes.
+#[derive(Debug, PartialEq)]
+enum Output {
+    /// `out/<format>/<Artist>/<Title>.<ext>`, named after the song.
+    Default,
+    /// Standard output, for a caller that keeps the song itself.
+    Stdout,
+    File(PathBuf),
+}
 
+/// The default place a song is written to: out/<format>/<artist>/<title>.<ext>.
+fn default_path(song: &Song, format: &str, printer: &dyn SongPrinter) -> PathBuf {
+    let mut path = PathBuf::from("out");
+    path.push(format.to_lowercase());
+    path.push(sanitize_filename(&song.artist));
+    path.push(format!(
+        "{}.{}",
+        sanitize_filename(&song.title),
+        printer.extension()
+    ));
+    path
+}
+
+/// Writes the song where it was asked to go. The two lines printed on the way
+/// are what a caller reads the path from (ZubuvZpevnikUi does), so they keep
+/// their wording.
+fn save_song(
+    song: &Song,
+    format: &str,
+    printer: &dyn SongPrinter,
+    output: &Output,
+) -> Result<(), String> {
+    let path = match output {
+        Output::Stdout => {
+            let mut stdout = std::io::stdout().lock();
+            // A reader that stops early (`| head`) has all it wanted.
+            return match printer.print(song, &mut stdout).and_then(|_| stdout.flush()) {
+                Err(e) if e.kind() != std::io::ErrorKind::BrokenPipe => {
+                    Err(format!("Failed to write the song: {}", e))
+                }
+                _ => Ok(()),
+            };
+        }
+        Output::File(path) => path.clone(),
+        Output::Default => default_path(song, format, printer),
+    };
+
+    if let Some(dir) = path.parent().filter(|dir| !dir.as_os_str().is_empty()) {
+        fs::create_dir_all(dir).map_err(|e| format!("Failed to create directories: {}", e))?;
+    }
     println!("Saving output to: {}", path.display());
 
-    // 5. Create the file and execute the printer
-    match File::create(&path) {
-        Ok(mut file) => {
-            if let Err(e) = printer.print(song, &mut file) {
-                eprintln!("Failed to write to file: {}", e);
-            } else {
-                println!("Successfully saved!");
-            }
-        }
-        Err(e) => eprintln!("Failed to create file: {}", e),
+    // The song is printed in full before anything is written, so a failure
+    // halfway leaves no half-written file behind.
+    let mut text = Vec::new();
+    printer
+        .print(song, &mut text)
+        .map_err(|e| format!("Failed to write to file: {}", e))?;
+    fs::write(&path, text).map_err(|e| format!("Failed to create file: {}", e))?;
+    println!("Successfully saved!");
+    Ok(())
+}
+
+const USAGE: &str = "\
+Usage:
+  chords_converter <SOURCE> [FORMAT]
+  chords_converter convert <SOURCE> [--format FORMAT] [-o FILE | -o -]
+
+SOURCE   a URL of a supported website, a local text file (chords over
+         lyrics), a page saved from a browser, or - to paste the song
+FORMAT   latex (default), text, debug
+
+Without -o the song is written to out/<format>/<Artist>/<Title>.<ext>
+and the path is printed as 'Saving output to: <path>'. -o - prints the
+song to standard output instead.";
+
+/// What the command line asks for.
+#[derive(Debug, PartialEq)]
+enum Command {
+    Help,
+    Convert {
+        source: String,
+        format: String,
+        output: Output,
+    },
+}
+
+/// Reads the command line. The first form, `<SOURCE> [FORMAT]`, is the one
+/// the tool always had, and callers rely on it, so it keeps working as it
+/// was; `convert` is the same with options.
+fn parse_args(args: &[String]) -> Result<Command, String> {
+    let Some(first) = args.first() else {
+        return Err("No source given.".to_string());
+    };
+    match first.as_str() {
+        "-h" | "--help" | "help" => Ok(Command::Help),
+        "convert" => parse_convert(&args[1..]),
+        _ => match args {
+            [source] => Ok(Command::Convert {
+                source: source.clone(),
+                format: "latex".to_string(),
+                output: Output::Default,
+            }),
+            [source, format] => Ok(Command::Convert {
+                source: source.clone(),
+                format: format.clone(),
+                output: Output::Default,
+            }),
+            _ => Err(format!("Unexpected argument '{}'.", args[2])),
+        },
     }
+}
+
+fn parse_convert(args: &[String]) -> Result<Command, String> {
+    let mut source = None;
+    let mut format = "latex".to_string();
+    let mut output = Output::Default;
+    let mut args = args.iter();
+    while let Some(arg) = args.next() {
+        let mut value = |name: &str| {
+            args.next()
+                .cloned()
+                .ok_or_else(|| format!("{} needs a value.", name))
+        };
+        match arg.as_str() {
+            "--format" | "-f" => format = value(arg)?,
+            "--output" | "-o" => {
+                output = match value(arg)?.as_str() {
+                    "-" => Output::Stdout,
+                    path => Output::File(PathBuf::from(path)),
+                }
+            }
+            // A lone "-" is the pasted source, not an option.
+            option if option.starts_with('-') && option != "-" => {
+                return Err(format!("Unknown option '{}'.", option));
+            }
+            _ if source.is_some() => return Err(format!("Unexpected argument '{}'.", arg)),
+            _ => source = Some(arg.clone()),
+        }
+    }
+    let source = source.ok_or_else(|| "convert needs a SOURCE.".to_string())?;
+    Ok(Command::Convert {
+        source,
+        format,
+        output,
+    })
 }
 
 #[tokio::main]
 async fn main() {
-    let args: Vec<String> = env::args().collect();
+    let args: Vec<String> = env::args().skip(1).collect();
+    let command = match parse_args(&args) {
+        Ok(command) => command,
+        Err(e) => {
+            eprintln!("{}\n\n{}", e, USAGE);
+            std::process::exit(2);
+        }
+    };
 
-    if args.len() < 2 {
-        eprintln!("Usage: chords_converter <URL | FILE | -> [OUTPUT_FORMAT]");
-        eprintln!("  <URL>   Fetch and parse a supported website");
-        eprintln!("  <FILE>  Parse a local text file (chords over lyrics) or a saved page");
-        eprintln!("  -       Read chords from standard input (paste, then Ctrl-D)");
-        eprintln!("Output Formats: text, latex, debug (default: latex)");
+    let Command::Convert {
+        source,
+        format,
+        output,
+    } = command
+    else {
+        println!("{}", USAGE);
+        return;
+    };
+
+    let result = async {
+        let printer = printers::get_printer(&format).map_err(|e| format!("Printer Error: {}", e))?;
+        let song = acquire_song(&source).await?;
+        save_song(&song, &format, printer.as_ref(), &output)
+    }
+    .await;
+
+    if let Err(e) = result {
+        eprintln!("{}", e);
         std::process::exit(1);
     }
-
-    let input_arg = &args[1];
-    let format_arg = if args.len() > 2 { args[2].as_str() } else { "latex" };
-
-    let printer = match printers::get_printer(format_arg) {
-        Ok(p) => p,
-        Err(e) => {
-            eprintln!("Printer Error: {}", e);
-            std::process::exit(1);
-        }
-    };
-
-    // Acquire the song from the requested source: pasted text, a website, or a file.
-    let song: Song = if input_arg == "-" || input_arg == "--paste" {
-        match read_stdin() {
-            Ok(text) => parsers::text::TextParser.parse("(pasted)", &text),
-            Err(e) => {
-                eprintln!("Failed to read from stdin: {}", e);
-                std::process::exit(1);
-            }
-        }
-    } else if is_url(input_arg) {
-        let parser = match parsers::get_parser(input_arg) {
-            Ok(p) => p,
-            Err(e) => {
-                eprintln!("Parser Error: {}", e);
-                if let Ok(html) = fetch_html(input_arg).await {
-                    print!("{}", html);
-                }
-                std::process::exit(1);
-            }
-        };
-        match fetch_html(input_arg).await {
-            Ok(html) => parser.parse(input_arg, &html),
-            Err(e) => {
-                eprintln!("{}", e);
-                std::process::exit(1);
-            }
-        }
-    } else {
-        // Treat the argument as a local text file.
-        if !Path::new(input_arg).is_file() {
-            eprintln!(
-                "Input Error: '{}' is not a URL, not '-', and not an existing file.",
-                input_arg
-            );
-            std::process::exit(1);
-        }
-        match fs::read_to_string(input_arg) {
-            Ok(text) => parse_file(input_arg, &text),
-            Err(e) => {
-                eprintln!("Failed to read file '{}': {}", input_arg, e);
-                std::process::exit(1);
-            }
-        }
-    };
-
-    save_song(&song, format_arg, printer.as_ref());
 }
 
 #[cfg(test)]
@@ -413,5 +520,64 @@ mod tests {
         assert!(message.contains("save it"));
         assert!(message.contains(COOKIE_VAR));
         assert!(message.contains(USER_AGENT_VAR));
+    }
+
+    fn args(list: &[&str]) -> Vec<String> {
+        list.iter().map(|s| s.to_string()).collect()
+    }
+
+    fn convert(source: &str, format: &str, output: Output) -> Command {
+        Command::Convert {
+            source: source.to_string(),
+            format: format.to_string(),
+            output,
+        }
+    }
+
+    /// ZubuvZpevnikUi runs `chords_converter <source> latex`; that form has to
+    /// mean what it always meant.
+    #[test]
+    fn the_original_form_still_works() {
+        assert_eq!(
+            parse_args(&args(&["https://a.cz/song", "latex"])),
+            Ok(convert("https://a.cz/song", "latex", Output::Default))
+        );
+        assert_eq!(
+            parse_args(&args(&["song.txt"])),
+            Ok(convert("song.txt", "latex", Output::Default))
+        );
+        assert!(parse_args(&args(&["a", "latex", "extra"])).is_err());
+    }
+
+    #[test]
+    fn convert_takes_options_in_any_order() {
+        assert_eq!(
+            parse_args(&args(&["convert", "-o", "-", "page.html", "--format", "text"])),
+            Ok(convert("page.html", "text", Output::Stdout))
+        );
+        assert_eq!(
+            parse_args(&args(&["convert", "page.html", "-o", "x/Song.tex"])),
+            Ok(convert("page.html", "latex", Output::File("x/Song.tex".into())))
+        );
+        // A lone dash is the pasted song.
+        assert_eq!(
+            parse_args(&args(&["convert", "-"])),
+            Ok(convert("-", "latex", Output::Default))
+        );
+    }
+
+    #[test]
+    fn convert_refuses_what_it_does_not_know() {
+        assert!(parse_args(&args(&["convert"])).is_err());
+        assert!(parse_args(&args(&["convert", "a", "b"])).is_err());
+        assert!(parse_args(&args(&["convert", "a", "--bogus"])).is_err());
+        assert!(parse_args(&args(&["convert", "a", "-o"])).is_err());
+        assert!(parse_args(&args(&[])).is_err());
+    }
+
+    #[test]
+    fn a_saved_bot_check_is_not_read_as_a_song() {
+        let error = parse_file("page.html", CHALLENGE).unwrap_err();
+        assert!(error.contains("bot check"), "{error}");
     }
 }

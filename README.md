@@ -3,7 +3,8 @@
 ## Usage
 The first argument is the input source, the second (optional) is the output
 format (`text`, `latex`, `debug`; defaults to `latex`). Output is written to
-`out/<format>/<artist>/<title>.<ext>`.
+`out/<format>/<artist>/<title>.<ext>`, and the path is printed as
+`Saving output to: <path>`.
 
 ```
 # From a supported website
@@ -18,6 +19,19 @@ cargo run -- kometa.html latex
 # Pasted directly into the console (finish with Ctrl-D)
 cargo run -- - latex
 ```
+
+`convert` does the same with options: `--format` names the output format,
+and `-o FILE` writes the song to a file of your choosing, or `-o -` to
+standard output, for a program that keeps the song itself:
+
+```
+cargo run -- convert <url> -o Song.tex
+cargo run -- convert kometa.html --format text -o -
+```
+
+The tool exits with 1 when the song could not be read or written and with 2
+when the command line is wrong, so a caller need not read the messages to
+know it failed.
 
 ### Supported websites
 | Site | Metadata read besides the song |
