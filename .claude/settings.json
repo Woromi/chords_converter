@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(scripts/checksongs.py *)",
+      "Bash(scripts/checkkeys.py *)",
+      "WebSearch",
+      "WebFetch(domain:songbpm.com)",
+      "WebFetch(domain:getsongbpm.com)",
+      "WebFetch(domain:songdata.io)",
+      "WebFetch(domain:chordify.net)",
+      "WebFetch(domain:musicnotes.com)"
+    ]
+  }
+}
