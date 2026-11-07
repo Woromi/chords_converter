@@ -1,6 +1,6 @@
 use super::SongPrinter;
 use crate::models::{Chord, Line, Part, PartType, Song};
-use crate::parsers::text::is_unsung;
+use crate::parsers::text::{is_unsung, tokenize};
 use std::io::Write;
 
 pub struct LatexPrinter;
@@ -50,15 +50,22 @@ impl SongPrinter for LatexPrinter {
 
         // 2. Iterate through parts
         for part in &song.parts {
-            // Open the correct environment based on the part type
-            // An intro of chords alone is played, not sung, so it is set as
-            // the instrumental it is; the song itself still calls it an intro.
-            let chords_only = part.lines.iter().all(is_unsung);
-            let env_close_str = match &part.part_type {
-                PartType::Intro if chords_only => {
-                    writeln!(writer, "\\begininstrumental")?;
-                    "\\endinstrumental"
+            // A part of chords alone is played, not sung, so it is set as the
+            // instrumental it is, in bars, whatever the site called it: an
+            // intro, an interlude, a solo or an outro. Tablature is the
+            // exception; it is not chords.
+            if is_chords_only(part) {
+                writeln!(writer, "\\begininstrumental")?;
+                for row in instrumental_rows(part) {
+                    writeln!(writer, "{INDENT}{row}")?;
                 }
+                writeln!(writer, "\\endinstrumental")?;
+                writeln!(writer)?;
+                continue;
+            }
+
+            // Open the correct environment based on the part type
+            let env_close_str = match &part.part_type {
                 PartType::Intro => {
                     writeln!(writer, "\\beginintro")?;
                     "\\endintro"
@@ -85,7 +92,7 @@ impl SongPrinter for LatexPrinter {
                 }
                 PartType::Tab => {
                     writeln!(writer, "\\beginverse*")?;
-                    writeln!(writer, "% [TAB]")?;
+                    writeln!(writer, "{INDENT}% [TAB]")?;
                     "\\endverse*"
                 }
                 PartType::Outro => {
@@ -94,7 +101,7 @@ impl SongPrinter for LatexPrinter {
                 }
                 PartType::Other(name) => {
                     writeln!(writer, "\\beginverse*")?;
-                    writeln!(writer, "% [{}]", one_line(&name.to_uppercase()))?;
+                    writeln!(writer, "{INDENT}% [{}]", one_line(&name.to_uppercase()))?;
                     "\\endverse*"
                 }
             };
@@ -104,7 +111,13 @@ impl SongPrinter for LatexPrinter {
             // so the whole part is resolved before the first line is written.
             let marks = quote_marks(part);
             for (line, marks) in part.lines.iter().zip(&marks) {
-                writeln!(writer, "{}", render_line(line, marks).trim_end())?;
+                // TeX skips the spaces a line starts with, so a margin the
+                // source left in front of the first chord is dropped.
+                let rendered = render_line(line, marks);
+                match rendered.trim() {
+                    "" => writeln!(writer)?,
+                    text => writeln!(writer, "{INDENT}{text}")?,
+                }
             }
 
             // Close the environment
@@ -120,6 +133,127 @@ impl SongPrinter for LatexPrinter {
     fn extension(&self) -> &str {
         "tex"
     }
+}
+
+/// What part content is indented by, as the songbook's `latexindent.yaml` does
+/// it, so running latexindent over a draft changes nothing. The one exception
+/// is a quotation running over two lines, whose second line latexindent
+/// indents a step further. The indent is rendering-neutral either way.
+const INDENT: &str = "    ";
+
+/// Whether a part is played rather than sung: it holds chords, and nothing in
+/// it is a lyric. Tablature is set as it is, never as an instrumental.
+fn is_chords_only(part: &Part) -> bool {
+    !matches!(part.part_type, PartType::Tab)
+        && part.lines.iter().any(|line| !line.chords.is_empty())
+        && part.lines.iter().all(is_unsung)
+}
+
+/// The rows of an instrumental, each a run of bars of fixed-width slots:
+/// `| \[Am]\[] | \[F]\[C] |`.
+///
+/// The source's own bar lines are kept where it drew them. A row drawn
+/// without any is one chord to the bar, since nothing says otherwise. A bar
+/// has two slots, the songbook's common choice, or as many as it has chords;
+/// `\[]` is the slot nothing new is played in. A repeat count written on the
+/// row (`x2`, `2x`, `(3×)`) becomes `\rep{n}` behind it. The other marks a
+/// sheet decorates a chord line with carry no rhythm the slots could keep, so
+/// they are dropped.
+fn instrumental_rows(part: &Part) -> Vec<String> {
+    let mut rows: Vec<String> = Vec::new();
+    for line in &part.lines {
+        let mut tokens: Vec<(usize, BarToken)> = line
+            .chords
+            .iter()
+            .map(|placed| (placed.position, BarToken::Chord(chord_name(&placed.chord))))
+            .collect();
+        for (column, token) in tokenize(&line.lyrics) {
+            if let Some(count) = repeat_count(token) {
+                tokens.push((column, BarToken::Repeat(count)));
+            } else if token.chars().all(|c| c == '|' || c == ':') {
+                tokens.push((column, BarToken::BarLine));
+            } else if token == "%" {
+                // "As the bar before": a slot of its own, like a chord.
+                tokens.push((column, BarToken::Chord("\\%".to_string())));
+            }
+        }
+        tokens.sort_by_key(|(column, _)| *column);
+
+        let drawn_bars = tokens.iter().any(|(_, t)| matches!(t, BarToken::BarLine));
+        let mut bars: Vec<Vec<String>> = Vec::new();
+        let mut current: Vec<String> = Vec::new();
+        let mut repeat = None;
+        // Whether a bar line has been drawn yet: a bar between two of them
+        // is a bar even when nothing new is played in it, so the row keeps
+        // its length.
+        let mut opened = false;
+        for (_, token) in tokens {
+            match token {
+                BarToken::Chord(name) if drawn_bars => current.push(name),
+                BarToken::Chord(name) => bars.push(vec![name]),
+                BarToken::BarLine => {
+                    if opened || !current.is_empty() {
+                        bars.push(std::mem::take(&mut current));
+                    }
+                    opened = true;
+                }
+                BarToken::Repeat(count) => repeat = Some(count),
+            }
+        }
+        if !current.is_empty() {
+            bars.push(current);
+        }
+
+        if bars.is_empty() {
+            // A row with nothing but a repeat count repeats the row above it,
+            // unless that row already says how often it is played.
+            if let (Some(count), Some(last)) = (repeat, rows.last_mut())
+                && !last.contains("\\rep{")
+            {
+                last.push_str(&format!(" \\rep{{{count}}}"));
+            }
+            continue;
+        }
+
+        let mut row = String::from("|");
+        for bar in &bars {
+            row.push(' ');
+            for name in bar {
+                row.push_str(&format!("\\[{name}]"));
+            }
+            for _ in bar.len()..SLOTS_PER_BAR {
+                row.push_str("\\[]");
+            }
+            row.push_str(" |");
+        }
+        if let Some(count) = repeat {
+            row.push_str(&format!(" \\rep{{{count}}}"));
+        }
+        rows.push(row);
+    }
+    rows
+}
+
+/// The slots a bar of an instrumental has at the least.
+const SLOTS_PER_BAR: usize = 2;
+
+/// What an instrumental row is read into, in the order it was written.
+enum BarToken {
+    Chord(String),
+    BarLine,
+    Repeat(u32),
+}
+
+/// The count of a repeat mark: `x2`, `2x`, `3×`, in brackets or not.
+fn repeat_count(token: &str) -> Option<u32> {
+    let lower = token
+        .trim_matches(['(', ')', '[', ']'])
+        .to_lowercase();
+    let digits = lower.trim_start_matches('x').trim_end_matches(['x', '×']);
+    if digits.len() == lower.len() || digits.is_empty() {
+        return None;
+    }
+    digits.parse().ok()
 }
 
 /// How a `"` of the lyrics reaches LaTeX: csquotes' `\enquote{…}`, opened by
@@ -216,6 +350,9 @@ fn push_lyric(c: char, marks: &[QuoteMark], next_mark: &mut usize, out: &mut Str
 /// Merges a line's chords into its lyrics.
 fn render_line(line: &Line, marks: &[QuoteMark]) -> String {
     let chars: Vec<char> = line.lyrics.chars().collect();
+    // Where the words end. Chords behind it are written one space apart,
+    // whatever run of spaces the source spread them over.
+    let end = chars.len() - chars.iter().rev().take_while(|c| c.is_whitespace()).count();
     let mut out = String::with_capacity(line.lyrics.len());
     let mut current_pos = 0;
     let mut next_mark = 0;
@@ -229,6 +366,15 @@ fn render_line(line: &Line, marks: &[QuoteMark]) -> String {
 
         // Catch the lyrics cursor up to the word this chord is sung on.
         let target = chord_target(&chars, placed.position);
+        if target > end {
+            while current_pos < end {
+                push_lyric(chars[current_pos], marks, &mut next_mark, &mut out);
+                current_pos += 1;
+            }
+            out.push(' ');
+            out.push_str(&format!("\\[{}]", chord_str));
+            continue;
+        }
         while current_pos < target {
             if current_pos < chars.len() {
                 push_lyric(chars[current_pos], marks, &mut next_mark, &mut out);
@@ -257,7 +403,7 @@ fn render_line(line: &Line, marks: &[QuoteMark]) -> String {
     }
 
     // Push any remaining lyrics characters after the last chord
-    while current_pos < chars.len() {
+    while current_pos < end {
         push_lyric(chars[current_pos], marks, &mut next_mark, &mut out);
         current_pos += 1;
     }
@@ -664,5 +810,117 @@ mod tests {
         assert_eq!(out.matches("\\begininstrumental").count(), 1);
         assert_eq!(out.matches("\\beginintro").count(), 1);
         assert!(out.find("\\begininstrumental") < out.find("\\beginintro"));
+    }
+
+    /// Prints a song of the given parts and returns what stands between
+    /// the prelude and `\endsong`.
+    fn body(parts: Vec<Part>) -> String {
+        let mut song = song(None, None);
+        song.parts = parts;
+        let out = header(&song);
+        let start = out.find("]\n\n").unwrap() + 3;
+        let end = out.find("\\endsong").unwrap();
+        out[start..end].to_string()
+    }
+
+    fn part(part_type: PartType, lines: Vec<Line>) -> Part {
+        Part { part_type, lines }
+    }
+
+    #[test]
+    fn chords_without_bar_lines_are_a_bar_each() {
+        let intro = part(
+            PartType::Intro,
+            vec![line("", &[(0, "G"), (6, "Gsus2"), (20, "G")])],
+        );
+        assert_eq!(
+            body(vec![intro]),
+            "\\begininstrumental\n    | \\[G]\\[] | \\[Gsus2]\\[] | \\[G]\\[] |\n\\endinstrumental\n\n"
+        );
+    }
+
+    #[test]
+    fn the_sources_bar_lines_are_kept() {
+        let solo = part(
+            PartType::Other("solo".to_string()),
+            vec![line(
+                "|       |       |       |",
+                &[(2, "Am"), (5, "Em"), (10, "F"), (18, "E")],
+            )],
+        );
+        assert_eq!(
+            body(vec![solo]),
+            "\\begininstrumental\n    | \\[Am]\\[Em] | \\[F]\\[] | \\[E]\\[] |\n\\endinstrumental\n\n"
+        );
+    }
+
+    #[test]
+    fn a_repeat_count_becomes_rep() {
+        let outro = part(
+            PartType::Outro,
+            vec![
+                line("|     |      | x2", &[(2, "C"), (8, "G")]),
+                line("", &[(0, "Am")]),
+                line("(4x)", &[]),
+            ],
+        );
+        assert_eq!(
+            body(vec![outro]),
+            "\\begininstrumental\n    | \\[C]\\[] | \\[G]\\[] | \\rep{2}\n    | \\[Am]\\[] | \\rep{4}\n\\endinstrumental\n\n"
+        );
+    }
+
+    #[test]
+    fn a_row_is_repeated_once_however_often_it_says_so() {
+        let outro = part(
+            PartType::Outro,
+            vec![line("|     |      | x2", &[(2, "C"), (8, "G")]), line("3x", &[])],
+        );
+        assert_eq!(
+            body(vec![outro]),
+            "\\begininstrumental\n    | \\[C]\\[] | \\[G]\\[] | \\rep{2}\n\\endinstrumental\n\n"
+        );
+    }
+
+    #[test]
+    fn a_bar_repeated_or_left_empty_keeps_its_place() {
+        let solo = part(
+            PartType::Instrumental,
+            vec![line("|    | %  |    |    |", &[(2, "Am"), (17, "F")])],
+        );
+        assert_eq!(
+            body(vec![solo]),
+            "\\begininstrumental\n    | \\[Am]\\[] | \\[\\%]\\[] | \\[]\\[] | \\[F]\\[] |\n\\endinstrumental\n\n"
+        );
+    }
+
+    #[test]
+    fn a_sung_intro_stays_an_intro() {
+        let intro = part(PartType::Intro, vec![line("La la", &[(0, "C")])]);
+        assert_eq!(body(vec![intro]), "\\beginintro\n    \\[C]La la\n\\endintro\n\n");
+    }
+
+    #[test]
+    fn tablature_is_never_an_instrumental() {
+        let tab = part(PartType::Tab, vec![line("", &[(0, "C")])]);
+        assert!(body(vec![tab]).starts_with("\\beginverse*\n    % [TAB]\n"));
+    }
+
+    #[test]
+    fn chords_after_the_last_word_are_one_space_apart() {
+        let part = verse(vec![line("to me   ", &[(3, "E&"), (6, "E&sus4"), (14, "E&")])]);
+        assert_eq!(render(&part), ["to \\[E&]me \\[E&sus4] \\[E&]"]);
+    }
+
+    #[test]
+    fn a_chord_right_behind_the_last_word_stays_on_it() {
+        let part = verse(vec![line("vzít", &[(4, "G")])]);
+        assert_eq!(render(&part), ["vzít\\[G]"]);
+    }
+
+    #[test]
+    fn part_content_is_indented_and_blank_lines_are_not() {
+        let verse = verse(vec![line("one", &[]), line("", &[]), line("two", &[])]);
+        assert_eq!(body(vec![verse]), "\\beginverse\n    one\n\n    two\n\\endverse\n\n");
     }
 }

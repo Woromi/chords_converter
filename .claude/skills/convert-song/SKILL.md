@@ -45,13 +45,16 @@ is exactly what the draft still lacks:
    language) filled in or still commented out. Remove a commented key only
    once it's filled.
 2. Join split lines so **every line has the same musical length**.
-3. Chord-only parts → `\begininstrumental` in bars of slots.
+3. Chord-only parts already come as `\begininstrumental` in bars. Fix the
+   rhythm: a row the site drew without bar lines is one chord per bar, which
+   may need two chords to a bar, or `\[\%]` for a repeated one.
 4. Repeated chorus → `\insertchorus` / `\insertchorus*`, never retyped.
 5. Verses repeating verse 1's progression → `\chordsoff` /
    `\chordsoffonsmallpage`, spread evenly. Verse 1 keeps its chords.
 6. `\[\nochord]`; trailing chords separated by single spaces; Czech/Slovak
    `~` ties; no `{…}`/`~` used to hold words under a chord.
-7. Indent (docs/building.md in the songbook). Don't use `-w`, which leaves
+7. The draft comes indented. After hand edits, re-indent (docs/building.md in
+   the songbook). Don't use `-w`, which leaves
    `.bak` files beside the song, and don't use `-s`, which suppresses the
    output. Write to the scratchpad, keep the log there too, then move it in:
    ```bash

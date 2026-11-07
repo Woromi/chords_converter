@@ -231,15 +231,20 @@ What the LaTeX printer does not do yet, and so what the hand edit still has to
 (the diff between `out/latex/BillyJoel/SheSAlwaysAWoman.tex` and the song in the
 songbook shows all of it):
 
-- part content is not indented (4 spaces);
-- chord-only parts come out as `\begininstrumental` holding a row of chord
-  names with the source's spacing (`\[G]   \[Gsus2]`), not bars of slots
-  (`| \[G]\[] | \[Gsus2]\[] |`), and an all-chords outro stays a `\beginoutro`;
+- chord-only parts are set in bars, but without a rhythm: a row the source
+  drew without bar lines becomes one chord per bar with two slots, which is a
+  guess (Kluziste needs two chords to a bar);
 - lines are as short as the site split them, not joined into whole phrases;
-- trailing chords keep the source's runs of spaces;
 - repeated choruses are printed in full instead of `\insertchorus`/`\insertchorus*`,
   and repeated verses keep their chords instead of `\chordsoff`;
-- `lang`, `met`, `cap` are left commented out when the site did not give them.
+- chords sit where the site put them, often a letter inside the syllable
+  (`D\[E]o` for `\[E]Do`);
+- `met`, `cap`, `key` are left commented out when the site did not give them,
+  and so is `lang` everywhere but on akordy.kytary.cz.
+
+The plan for closing these is `docs/PLAN.md`: the printer does what is always
+right (tier 1), `--tidy`/`tidy` makes the safe rewrites (tier 2), and
+`suggest`/`apply` propose the changes a person decides on (tier 3).
 
 ## Checking a song
 

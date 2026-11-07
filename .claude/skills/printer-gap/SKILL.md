@@ -61,8 +61,10 @@ diff <(norm < out/latex/A/T.tex) <(norm < ../ZubuvZpevnik/songs/chords/A/T.tex)
 (Don't write shell positional parameters in this file. Skill arguments are
 substituted into them when the skill loads.)
 
-Indentation is already a known gap. Don't let it swamp the diff. Also read
-one raw diff, so you see the whitespace gaps (trailing-chord spacing) too.
+Normalising takes indentation and runs of spaces out, so the diff shows
+content. Also read one raw diff: the printer indents and single-spaces
+trailing chords itself now, so a raw whitespace difference there is a
+regression.
 
 ## 4. Classify every hunk
 

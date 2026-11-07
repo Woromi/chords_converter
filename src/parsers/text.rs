@@ -609,7 +609,7 @@ fn is_chord_line(line: &str) -> bool {
 
 /// Splits a line into `(column, token)` pairs, the column being the character
 /// offset the token starts at.
-fn tokenize(line: &str) -> Vec<(usize, &str)> {
+pub(crate) fn tokenize(line: &str) -> Vec<(usize, &str)> {
     let mut tokens = Vec::new();
     let mut start: Option<(usize, usize)> = None;
 
@@ -728,7 +728,7 @@ fn without_trailing_remark(line: &str) -> &str {
 
 /// Bar lines, repeat marks and repeat counts, all of which may share a line
 /// with chords without making it a lyric line.
-fn is_decoration(token: &str) -> bool {
+pub(crate) fn is_decoration(token: &str) -> bool {
     const MARKS: [char; 10] = ['|', ':', '-', '/', '\\', '%', '*', '.', ',', '='];
 
     let token = token.trim_matches(['(', ')', '[', ']']);
