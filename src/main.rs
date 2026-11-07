@@ -12,6 +12,7 @@ use std::time::Duration;
 mod models;
 mod parsers;
 mod printers;
+mod tex;
 
 use models::Song;
 use parsers::SongParser;
@@ -319,29 +320,33 @@ fn default_path(song: &Song, format: &str, printer: &dyn SongPrinter) -> PathBuf
     path
 }
 
-/// Writes the song where it was asked to go. The two lines printed on the way
-/// are what a caller reads the path from (ZubuvZpevnikUi does), so they keep
-/// their wording.
+/// Writes the song where it was asked to go, tidied first when asked to be.
+/// The two lines printed on the way are what a caller reads the path from
+/// (ZubuvZpevnikUi does), so they keep their wording.
 fn save_song(
     song: &Song,
     format: &str,
     printer: &dyn SongPrinter,
     output: &Output,
+    tidy: bool,
 ) -> Result<(), String> {
+    // The song is printed in full before anything is written, so a failure
+    // halfway leaves no half-written file behind.
+    let mut bytes = Vec::new();
+    printer
+        .print(song, &mut bytes)
+        .map_err(|e| format!("Failed to write to file: {}", e))?;
+    let mut text = String::from_utf8(bytes).map_err(|e| format!("Failed to write: {}", e))?;
+    if tidy {
+        // The same tidying `tidy` does to a song in the songbook, done to the
+        // fresh draft's text.
+        let (tidied, changes) = tex::tidy::tidy(&text);
+        report_changes("draft", &changes);
+        text = tidied;
+    }
+
     let path = match output {
-        Output::Stdout => {
-            let mut stdout = std::io::stdout().lock();
-            // A reader that stops early (`| head`) has all it wanted.
-            return match printer
-                .print(song, &mut stdout)
-                .and_then(|_| stdout.flush())
-            {
-                Err(e) if e.kind() != std::io::ErrorKind::BrokenPipe => {
-                    Err(format!("Failed to write the song: {}", e))
-                }
-                _ => Ok(()),
-            };
-        }
+        Output::Stdout => return write_stdout(&text),
         Output::File(path) => path.clone(),
         Output::Default => default_path(song, format, printer),
     };
@@ -350,22 +355,66 @@ fn save_song(
         fs::create_dir_all(dir).map_err(|e| format!("Failed to create directories: {}", e))?;
     }
     println!("Saving output to: {}", path.display());
-
-    // The song is printed in full before anything is written, so a failure
-    // halfway leaves no half-written file behind.
-    let mut text = Vec::new();
-    printer
-        .print(song, &mut text)
-        .map_err(|e| format!("Failed to write to file: {}", e))?;
     fs::write(&path, text).map_err(|e| format!("Failed to create file: {}", e))?;
     println!("Successfully saved!");
     Ok(())
 }
 
+/// Prints text to standard output. A reader that stops early (`| head`) has
+/// all it wanted.
+fn write_stdout(text: &str) -> Result<(), String> {
+    let mut stdout = std::io::stdout().lock();
+    match stdout
+        .write_all(text.as_bytes())
+        .and_then(|_| stdout.flush())
+    {
+        Err(e) if e.kind() != std::io::ErrorKind::BrokenPipe => {
+            Err(format!("Failed to write the song: {}", e))
+        }
+        _ => Ok(()),
+    }
+}
+
+/// Tells the user, on stderr, what tidying changed and where.
+fn report_changes(name: &str, changes: &[tex::tidy::Change]) {
+    for change in changes {
+        eprintln!("{}:{}: {}", name, change.line, change.description);
+    }
+}
+
+/// Tidies a song file. By default the file itself is rewritten, but only
+/// when something changed, and through a file beside it that then takes its
+/// place, so the song is never left half written.
+fn tidy_file(file: &Path, output: &Output) -> Result<(), String> {
+    let text = fs::read_to_string(file)
+        .map_err(|e| format!("Failed to read file '{}': {}", file.display(), e))?;
+    let (tidied, changes) = tex::tidy::tidy(&text);
+    report_changes(&file.display().to_string(), &changes);
+
+    match output {
+        Output::Stdout => write_stdout(&tidied),
+        Output::File(path) => fs::write(path, tidied)
+            .map_err(|e| format!("Failed to write '{}': {}", path.display(), e)),
+        Output::Default if changes.is_empty() => Ok(()),
+        Output::Default => {
+            let mut temporary = file.as_os_str().to_owned();
+            temporary.push(".tidy");
+            let temporary = PathBuf::from(temporary);
+            fs::write(&temporary, tidied)
+                .and_then(|_| fs::rename(&temporary, file))
+                .map_err(|e| {
+                    let _ = fs::remove_file(&temporary);
+                    format!("Failed to write '{}': {}", file.display(), e)
+                })
+        }
+    }
+}
+
 const USAGE: &str = "\
 Usage:
   chords_converter <SOURCE> [FORMAT]
-  chords_converter convert <SOURCE> [--format FORMAT] [-o FILE | -o -]
+  chords_converter convert <SOURCE> [--format FORMAT] [--tidy] [-o FILE | -o -]
+  chords_converter tidy <SONG.tex> [-o FILE | -o -]
 
 SOURCE   a URL of a supported website, a local text file (chords over
          lyrics), a page saved from a browser, or - to paste the song
@@ -373,7 +422,12 @@ FORMAT   latex (default), text, debug
 
 Without -o the song is written to out/<format>/<Artist>/<Title>.<ext>
 and the path is printed as 'Saving output to: <path>'. -o - prints the
-song to standard output instead.";
+song to standard output instead.
+
+tidy improves a LaTeX song without changing anything else in it: a chorus
+typed out again is replaced by \\insertchorus. It rewrites the file unless
+-o is given, and lists every change on stderr. convert --tidy does the same
+to the draft.";
 
 /// What the command line asks for.
 #[derive(Debug, PartialEq)]
@@ -382,6 +436,11 @@ enum Command {
     Convert {
         source: String,
         format: String,
+        output: Output,
+        tidy: bool,
+    },
+    Tidy {
+        file: PathBuf,
         output: Output,
     },
 }
@@ -396,16 +455,19 @@ fn parse_args(args: &[String]) -> Result<Command, String> {
     match first.as_str() {
         "-h" | "--help" | "help" => Ok(Command::Help),
         "convert" => parse_convert(&args[1..]),
+        "tidy" => parse_tidy(&args[1..]),
         _ => match args {
             [source] => Ok(Command::Convert {
                 source: source.clone(),
                 format: "latex".to_string(),
                 output: Output::Default,
+                tidy: false,
             }),
             [source, format] => Ok(Command::Convert {
                 source: source.clone(),
                 format: format.clone(),
                 output: Output::Default,
+                tidy: false,
             }),
             _ => Err(format!("Unexpected argument '{}'.", args[2])),
         },
@@ -416,6 +478,7 @@ fn parse_convert(args: &[String]) -> Result<Command, String> {
     let mut source = None;
     let mut format = "latex".to_string();
     let mut output = Output::Default;
+    let mut tidy = false;
     let mut args = args.iter();
     while let Some(arg) = args.next() {
         let mut value = |name: &str| {
@@ -425,6 +488,7 @@ fn parse_convert(args: &[String]) -> Result<Command, String> {
         };
         match arg.as_str() {
             "--format" | "-f" => format = value(arg)?,
+            "--tidy" => tidy = true,
             "--output" | "-o" => {
                 output = match value(arg)?.as_str() {
                     "-" => Output::Stdout,
@@ -440,11 +504,39 @@ fn parse_convert(args: &[String]) -> Result<Command, String> {
         }
     }
     let source = source.ok_or_else(|| "convert needs a SOURCE.".to_string())?;
+    if tidy && !format.eq_ignore_ascii_case("latex") {
+        return Err("--tidy works on LaTeX output only.".to_string());
+    }
     Ok(Command::Convert {
         source,
         format,
         output,
+        tidy,
     })
+}
+
+fn parse_tidy(args: &[String]) -> Result<Command, String> {
+    let mut file = None;
+    let mut output = Output::Default;
+    let mut args = args.iter();
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--output" | "-o" => {
+                output = match args.next().map(String::as_str) {
+                    Some("-") => Output::Stdout,
+                    Some(path) => Output::File(PathBuf::from(path)),
+                    None => return Err(format!("{} needs a value.", arg)),
+                }
+            }
+            option if option.starts_with('-') => {
+                return Err(format!("Unknown option '{}'.", option));
+            }
+            _ if file.is_some() => return Err(format!("Unexpected argument '{}'.", arg)),
+            _ => file = Some(PathBuf::from(arg)),
+        }
+    }
+    let file = file.ok_or_else(|| "tidy needs a song file.".to_string())?;
+    Ok(Command::Tidy { file, output })
 }
 
 #[tokio::main]
@@ -458,28 +550,30 @@ async fn main() {
         }
     };
 
-    let Command::Convert {
-        source,
-        format,
-        output,
-    } = command
-    else {
-        println!("{}", USAGE);
-        return;
+    let result = match command {
+        Command::Help => {
+            println!("{}", USAGE);
+            return;
+        }
+        Command::Tidy { file, output } => tidy_file(&file, &output),
+        Command::Convert {
+            source,
+            format,
+            output,
+            tidy,
+        } => convert(&source, &format, &output, tidy).await,
     };
-
-    let result = async {
-        let printer =
-            printers::get_printer(&format).map_err(|e| format!("Printer Error: {}", e))?;
-        let song = acquire_song(&source).await?;
-        save_song(&song, &format, printer.as_ref(), &output)
-    }
-    .await;
 
     if let Err(e) = result {
         eprintln!("{}", e);
         std::process::exit(1);
     }
+}
+
+async fn convert(source: &str, format: &str, output: &Output, tidy: bool) -> Result<(), String> {
+    let printer = printers::get_printer(format).map_err(|e| format!("Printer Error: {}", e))?;
+    let song = acquire_song(source).await?;
+    save_song(&song, format, printer.as_ref(), output, tidy)
 }
 
 #[cfg(test)]
@@ -538,6 +632,7 @@ mod tests {
             source: source.to_string(),
             format: format.to_string(),
             output,
+            tidy: false,
         }
     }
 
@@ -597,5 +692,39 @@ mod tests {
     fn a_saved_bot_check_is_not_read_as_a_song() {
         let error = parse_file("page.html", CHALLENGE).unwrap_err();
         assert!(error.contains("bot check"), "{error}");
+    }
+
+    #[test]
+    fn tidy_takes_a_file_and_an_output() {
+        assert_eq!(
+            parse_args(&args(&["tidy", "Song.tex"])),
+            Ok(Command::Tidy {
+                file: "Song.tex".into(),
+                output: Output::Default
+            })
+        );
+        assert_eq!(
+            parse_args(&args(&["tidy", "-o", "-", "Song.tex"])),
+            Ok(Command::Tidy {
+                file: "Song.tex".into(),
+                output: Output::Stdout
+            })
+        );
+        assert!(parse_args(&args(&["tidy"])).is_err());
+        assert!(parse_args(&args(&["tidy", "a.tex", "b.tex"])).is_err());
+    }
+
+    #[test]
+    fn convert_tidies_latex_only() {
+        assert_eq!(
+            parse_args(&args(&["convert", "page.html", "--tidy"])),
+            Ok(Command::Convert {
+                source: "page.html".to_string(),
+                format: "latex".to_string(),
+                output: Output::Default,
+                tidy: true,
+            })
+        );
+        assert!(parse_args(&args(&["convert", "page.html", "--tidy", "-f", "text"])).is_err());
     }
 }
