@@ -10,3 +10,4 @@ serde_json = "1.0"
 tokio = { version = "1.37", features = ["full"] }
 deunicode = "1.4"
 heck = "0.5"
+hyphenation = { version = "0.8.4", features = ["embed_all"] }

@@ -29,6 +29,34 @@ cargo run -- convert <url> -o Song.tex
 cargo run -- convert kometa.html --format text -o -
 ```
 
+`--tidy` also makes the improvements below to the draft, and `tidy` makes
+them to a song that is already in the songbook:
+
+```
+cargo run -- convert <url> --tidy
+cargo run -- tidy ../ZubuvZpevnik/songs/chords/Hoboes/Samota.tex        # rewrites the file
+cargo run -- tidy Song.tex -o -                                          # prints it instead
+```
+
+`tidy` changes only the bytes it means to and lists each change on stderr.
+The file is rewritten only when something changed, and through a file beside
+it, so it is never left half written.
+
+- **A chorus typed out again becomes `\insertchorus`**, when it is the same
+  as the chorus right before it, word for word and chord for chord, with the
+  same number and the same switches after `\beginchorus`. `\insertchorus`
+  reprints that chorus exactly: 43 songbook songs tidied this way typeset
+  pixel for pixel the same, on A4 and A5. A song whose choruses sit inside
+  `\iflargepaper … \fi`, or replay chords (`^`, `\memorize`), is left alone.
+- **A chord drawn inside its syllable moves to the syllable's start**:
+  `hl\[E7]ubokou` becomes `\[E7]hlubokou`, `D\[E]o` becomes `\[E]Do`.
+  Sites draw a chord over the vowel and leave the consonants that open the
+  syllable in front of it. Syllables come from the TeX hyphenation patterns
+  for the song's `lang`. Those patterns don't know every syllable (English
+  ones find none in "melodies"), so a chord only moves back across
+  consonants, never across a vowel. This one does change where a chord
+  prints, which is the point.
+
 The tool exits with 1 when the song could not be read or written and with 2
 when the command line is wrong, so a caller need not read the messages to
 know it failed.

@@ -15,12 +15,26 @@ pub struct Change {
     pub description: String,
 }
 
-/// Tidies a song: every rule, every change applied. Tidying what this
-/// returns again changes nothing.
+/// Tidies a song: every rule, every change applied.
+///
+/// Chords move first, and the choruses are compared afterwards: a chorus
+/// whose repeat had its chords placed right by hand only matches it once
+/// the first one is placed right too. Tidying what this returns again
+/// changes nothing. The changes are reported in the order they were made.
+/// A move stays on its line, so the line numbers hold for both rounds.
 pub fn tidy(text: &str) -> (String, Vec<Change>) {
-    let mut changes = repeated_choruses(text, &scan(text));
-    changes.sort_by_key(|c| c.span.start);
-    (apply(text, &changes), changes)
+    let mut moves = chords_to_syllable_starts(text, &scan(text));
+    moves.sort_by_key(|c| c.span.start);
+    let moved = apply(text, &moves);
+
+    let mut choruses = repeated_choruses(&moved, &scan(&moved));
+    choruses.sort_by_key(|c| c.span.start);
+    let tidied = apply(&moved, &choruses);
+
+    let mut changes = moves;
+    changes.extend(choruses);
+    changes.sort_by_key(|c| c.line);
+    (tidied, changes)
 }
 
 /// Applies changes that don't overlap, in order.
@@ -109,6 +123,207 @@ fn uses_chord_memory(body: &str) -> bool {
     body.lines().map(code_of).any(|code| {
         code.contains('^') || code.contains("\\memorize") || code.contains("\\usechords")
     })
+}
+
+/// A chord the source drew a letter or two inside its syllable moves to
+/// where the syllable starts: `hl\[E7]ubokou` becomes `\[E7]hlubokou`,
+/// `D\[E]o` becomes `\[E]Do`. Sites draw a chord over the vowel it is sung
+/// on, and leave the consonants that open the syllable in front of it.
+///
+/// Syllables are found with the TeX hyphenation patterns of the song's
+/// `lang`, the ones LaTeX itself uses. The patterns know where a word *may*
+/// break, which is not every syllable: English ones find none in "away" or
+/// "melodies". So a chord only moves back across consonants. Where the
+/// patterns found nothing, the way back to the word's start runs over a
+/// vowel, and the chord stays where the source put it. A song with no
+/// `lang`, or one with no patterns here, is left as it is.
+fn chords_to_syllable_starts(text: &str, scan: &Scan) -> Vec<Change> {
+    let Some(hyphenator) = scan
+        .lang
+        .as_deref()
+        .and_then(syllables::Hyphenator::for_lang)
+    else {
+        return Vec::new();
+    };
+    let mut changes = Vec::new();
+    for part in &scan.parts {
+        // An instrumental holds chords in bars, not over syllables.
+        if part.kind.starts_with("instrumental") {
+            continue;
+        }
+        let mut line_start = part.body.start;
+        for (index, raw) in text[part.body.clone()].split_inclusive('\n').enumerate() {
+            let code = code_of(raw.trim_end_matches(['\n', '\r']));
+            for (span, replacement) in syllables::moves(code, &hyphenator) {
+                changes.push(Change {
+                    span: line_start + span.start..line_start + span.end,
+                    replacement: replacement.clone(),
+                    line: part.line + 1 + index,
+                    description: format!(
+                        "chord moved to the start of its syllable: {}",
+                        replacement.trim()
+                    ),
+                });
+            }
+            line_start += raw.len();
+        }
+    }
+    changes
+}
+
+mod syllables {
+    use hyphenation::{Hyphenator as _, Language, Load, Standard};
+    use std::ops::Range;
+
+    pub struct Hyphenator(Standard);
+
+    impl Hyphenator {
+        /// The patterns for a song's `lang`, if there are any.
+        pub fn for_lang(lang: &str) -> Option<Hyphenator> {
+            let language = match lang {
+                "czech" => Language::Czech,
+                "slovak" => Language::Slovak,
+                "english" => Language::EnglishUS,
+                _ => return None,
+            };
+            let mut patterns = Standard::from_embedded(language).ok()?;
+            // A chord may fall on the first or last letter's syllable, which
+            // TeX's minima are there to keep a hyphen away from.
+            patterns.minima = (1, 1);
+            Some(Hyphenator(patterns))
+        }
+
+        /// The letter indices a syllable starts at, 0 included.
+        fn starts(&self, letters: &[char]) -> Vec<usize> {
+            let word: String = letters.iter().collect::<String>().to_lowercase();
+            // Breaks are byte offsets into the lowercased word; lowercasing a
+            // letter can change its length, so they are mapped back by letter.
+            let lowered: Vec<usize> = word.char_indices().map(|(at, _)| at).collect();
+            if lowered.len() != letters.len() {
+                return vec![0];
+            }
+            let mut starts = vec![0];
+            for at in self.0.hyphenate(&word).breaks {
+                if let Some(index) = lowered.iter().position(|&b| b == at) {
+                    starts.push(index);
+                }
+            }
+            starts
+        }
+    }
+
+    fn is_vowel(c: char) -> bool {
+        "aeiouyáéěíóúůýäëïöüàèìòùâêîôûåæøœ".contains(c.to_lowercase().next().unwrap_or(c))
+    }
+
+    /// What a line is read into: a letter of the lyrics, a chord, or
+    /// anything else (spaces, punctuation, a macro), which ends a word.
+    enum Piece {
+        Letter(char, Range<usize>),
+        Chord(Range<usize>),
+        Other,
+    }
+
+    fn pieces(code: &str) -> Vec<Piece> {
+        let mut pieces = Vec::new();
+        let mut chars = code.char_indices().peekable();
+        while let Some((at, c)) = chars.next() {
+            if c == '\\' {
+                match chars.peek() {
+                    Some(&(_, '[')) => {
+                        // A chord runs to its `]`; one never closed ends the
+                        // line's reading.
+                        let Some(close) = code[at..].find(']') else {
+                            pieces.push(Piece::Other);
+                            break;
+                        };
+                        let end = at + close + 1;
+                        while chars.peek().is_some_and(|&(i, _)| i < end) {
+                            chars.next();
+                        }
+                        pieces.push(Piece::Chord(at..end));
+                    }
+                    Some(&(_, next)) if next.is_alphabetic() => {
+                        // A macro's name is no word of the lyrics.
+                        while chars.peek().is_some_and(|&(_, n)| n.is_alphabetic()) {
+                            chars.next();
+                        }
+                        pieces.push(Piece::Other);
+                    }
+                    _ => {
+                        chars.next();
+                        pieces.push(Piece::Other);
+                    }
+                }
+            } else if c.is_alphabetic() {
+                pieces.push(Piece::Letter(c, at..at + c.len_utf8()));
+            } else {
+                pieces.push(Piece::Other);
+            }
+        }
+        pieces
+    }
+
+    /// The replacements that move a line's chords to their syllables' starts:
+    /// each covers the letters the chord moves back over and the chord, and
+    /// puts the chord in front of them.
+    pub fn moves(code: &str, hyphenator: &Hyphenator) -> Vec<(Range<usize>, String)> {
+        let pieces = pieces(code);
+        let mut moves = Vec::new();
+        let mut i = 0;
+        while i < pieces.len() {
+            // A word: letters, with chords drawn between them.
+            if !matches!(pieces[i], Piece::Letter(..)) {
+                i += 1;
+                continue;
+            }
+            let mut letters: Vec<(char, Range<usize>)> = Vec::new();
+            // Chords inside the word, with the letter index they stand before.
+            let mut chords: Vec<(usize, Range<usize>)> = Vec::new();
+            let mut j = i;
+            while j < pieces.len() {
+                match &pieces[j] {
+                    Piece::Letter(c, span) => letters.push((*c, span.clone())),
+                    Piece::Chord(span) if matches!(pieces.get(j + 1), Some(Piece::Letter(..))) => {
+                        chords.push((letters.len(), span.clone()))
+                    }
+                    _ => break,
+                }
+                j += 1;
+            }
+            i = j;
+
+            let word: Vec<char> = letters.iter().map(|(c, _)| *c).collect();
+            // A hum ("mmmm") has no syllables; a chord in it is where it is
+            // meant to be.
+            if !word.iter().copied().any(is_vowel) {
+                continue;
+            }
+            let starts = hyphenator.starts(&word);
+            for (k, (index, chord)) in chords.iter().enumerate() {
+                let start = starts
+                    .iter()
+                    .copied()
+                    .filter(|&s| s <= *index)
+                    .max()
+                    .unwrap_or(0);
+                if start == *index || word[start..*index].iter().copied().any(is_vowel) {
+                    continue;
+                }
+                // Another chord in the way stays in the way, and so does
+                // one standing right in front of the word: the chord would
+                // land on it.
+                let from = letters[start].1.start;
+                if (k > 0 && chords[k - 1].0 >= start) || code[..from].ends_with(']') {
+                    continue;
+                }
+                let mut replacement = code[chord.clone()].to_string();
+                replacement.push_str(&code[from..chord.start]);
+                moves.push((from..chord.end, replacement));
+            }
+        }
+        moves
+    }
 }
 
 #[cfg(test)]
@@ -216,6 +431,42 @@ mod tests {
     }
 
     #[test]
+    fn a_chorus_placed_right_by_hand_matches_once_the_first_is() {
+        let text = song(&[
+            chorus("", "    D\\[E]o tváře\n", ""),
+            chorus("", "    \\[E]Do tváře\n", ""),
+        ])
+        .replace("english", "czech");
+        let (once, _) = tidy(&text);
+        assert_eq!(
+            once,
+            song(&[
+                chorus("", "    \\[E]Do tváře\n", ""),
+                "\\insertchorus\n\n".into()
+            ])
+            .replace("english", "czech")
+        );
+        assert!(tidy(&once).1.is_empty());
+    }
+
+    #[test]
+    fn a_move_inside_a_replaced_chorus_goes_with_it() {
+        let body = "    D\\[E]o tváře\n";
+        let text = song(&[chorus("", body, ""), chorus("", body, "")]).replace("english", "czech");
+        let (tidied, changes) = tidy(&text);
+        // Both copies move, then the second is replaced.
+        assert_eq!(changes.len(), 3);
+        assert_eq!(
+            tidied,
+            song(&[
+                chorus("", "    \\[E]Do tváře\n", ""),
+                "\\insertchorus\n\n".into()
+            ])
+            .replace("english", "czech")
+        );
+    }
+
+    #[test]
     fn tidying_twice_changes_nothing_more() {
         let text = song(&[
             chorus("", BODY, ""),
@@ -228,5 +479,94 @@ mod tests {
         let (twice, more) = tidy(&once);
         assert!(more.is_empty());
         assert_eq!(once, twice);
+    }
+
+    fn verse_song(lang: &str, line: &str) -> String {
+        format!(
+            "\\beginsong{{T}}[\n    lang={{{lang}}},\n]\n\n\\beginverse\n    {line}\n\\endverse\n\n\\endsong\n"
+        )
+    }
+
+    fn tidied_line(lang: &str, line: &str) -> String {
+        let (text, _) = tidy(&verse_song(lang, line));
+        text.lines().nth(5).unwrap().trim().to_string()
+    }
+
+    #[test]
+    fn a_chord_moves_back_over_the_consonants_opening_its_syllable() {
+        assert_eq!(
+            tidied_line(
+                "czech",
+                "D\\[E]o tváře čas mi hl\\[E7]ubokou brázdu s\\[A]amotou"
+            ),
+            "\\[E]Do tváře čas mi \\[E7]hlubokou brázdu \\[A]samotou"
+        );
+        assert_eq!(
+            tidied_line("czech", "nikd\\[E]o ti nepov\\[C#m]í"),
+            "ni\\[E]kdo ti nepo\\[C#m]ví"
+        );
+        assert_eq!(tidied_line("czech", "kap\\[H7]itán"), "ka\\[H7]pitán");
+    }
+
+    #[test]
+    fn a_chord_already_on_its_syllable_stays() {
+        for line in [
+            "nedo\\[Fmaj7]jdou",
+            "\\[C]Vydal z~hrdla",
+            "conver\\[G#m]sation",
+            "slova\\[G]",
+        ] {
+            let lang = if line.contains("conver") {
+                "english"
+            } else {
+                "czech"
+            };
+            assert_eq!(tidied_line(lang, line), line);
+        }
+    }
+
+    #[test]
+    fn where_the_patterns_know_no_syllable_nothing_moves() {
+        // English patterns find no break in "melodies" or "away"; the way back
+        // runs over vowels, so the chord stays.
+        assert_eq!(
+            tidied_line("english", "ancient melo\\[A]dies"),
+            "ancient melo\\[A]dies"
+        );
+        assert_eq!(tidied_line("english", "a\\[C]way"), "a\\[C]way");
+        assert_eq!(tidied_line("english", "mmm\\[Hm]m"), "mmm\\[Hm]m");
+    }
+
+    #[test]
+    fn a_song_without_lang_or_patterns_is_left_alone() {
+        let text = verse_song("french", "D\\[E]o");
+        assert!(tidy(&text).1.is_empty());
+        let text = "\\beginsong{T}[\n]\n\\beginverse\n    D\\[E]o\n\\endverse\n\\endsong\n";
+        assert!(tidy(text).1.is_empty());
+    }
+
+    #[test]
+    fn macros_comments_and_instrumentals_are_not_words() {
+        assert_eq!(
+            tidied_line("czech", "\\enquote{D\\[E]o} % D\\[E]o"),
+            "\\enquote{\\[E]Do} % D\\[E]o"
+        );
+        let text = "\\beginsong{T}[\n    lang={czech},\n]\n\\begininstrumental\n    | D\\[E]o |\n\\endinstrumental\n\\endsong\n";
+        assert!(tidy(text).1.is_empty());
+    }
+
+    #[test]
+    fn a_chord_in_the_way_keeps_the_next_one_where_it_is() {
+        // "hlubokou": a chord before "bo" and one inside it; the second may
+        // not jump over the first.
+        assert_eq!(
+            tidied_line("czech", "hlu\\[C]b\\[D]okou"),
+            "hlu\\[C]b\\[D]okou"
+        );
+        // Nor onto a chord drawn right in front of the word.
+        assert_eq!(
+            tidied_line("czech", "jak \\[G]p\\[C]í\\[D]ská"),
+            "jak \\[G]p\\[C]í\\[D]ská"
+        );
     }
 }

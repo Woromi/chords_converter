@@ -235,10 +235,11 @@ songbook shows all of it):
   drew without bar lines becomes one chord per bar with two slots, which is a
   guess (Kluziste needs two chords to a bar);
 - lines are as short as the site split them, not joined into whole phrases;
-- repeated choruses are printed in full instead of `\insertchorus`/`\insertchorus*`,
-  and repeated verses keep their chords instead of `\chordsoff`;
-- chords sit where the site put them, often a letter inside the syllable
-  (`D\[E]o` for `\[E]Do`);
+- repeated choruses are printed in full (`--tidy` makes an identical one
+  `\insertchorus`; `\insertchorus*` is a person's decision), and repeated
+  verses keep their chords instead of `\chordsoff`;
+- without `--tidy`, chords sit where the site put them, often a letter inside
+  the syllable (`D\[E]o` for `\[E]Do`);
 - `met`, `cap`, `key` are left commented out when the site did not give them,
   and so is `lang` everywhere but on akordy.kytary.cz.
 

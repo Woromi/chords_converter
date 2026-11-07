@@ -425,7 +425,8 @@ and the path is printed as 'Saving output to: <path>'. -o - prints the
 song to standard output instead.
 
 tidy improves a LaTeX song without changing anything else in it: a chorus
-typed out again is replaced by \\insertchorus. It rewrites the file unless
+typed out again is replaced by \\insertchorus, and a chord drawn inside its
+syllable moves to the syllable's start. It rewrites the file unless
 -o is given, and lists every change on stderr. convert --tidy does the same
 to the draft.";
 

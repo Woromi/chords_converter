@@ -86,15 +86,29 @@ part of the identical-output check `\insertchorus` has.
    bar, at least two slots, and `x2` → `\rep{2}`. Trailing chords one space
    apart, 4-space indent, `lang` from kytary's sheet (`cs`/`sk`/`en` only).
    Open: `lang` from the lyrics for the other sites.
-3. **Song scanner.** Parts, lines and chords with byte spans. Unknown
-   constructs are skipped and never rewritten. Gate: all ~200 songbook songs
-   scan, and spans re-slice to the exact source.
-4. **Tier 2 `tidy`.** Exact repeated chorus → `\insertchorus`. Verified on
-   the corpus by building before/after and comparing rendered pages.
-5. **Tier 3 `suggest`/`apply`.** Fitting stages, then syllables.
+3. [x] **Song scanner** (`src/tex/mod.rs`): parts with byte spans, numbers,
+   switches, `\if…\fi` depth, `\insertchorus…`, `lang`. Gate (`cargo test --
+   --ignored`): all 216 songbook songs scan, every part re-slices.
+4. [x] **Tier 2 `tidy`** and `convert --tidy` (`src/tex/`):
+   - [x] Exact repeated chorus → `\insertchorus`. Gate: tidying the
+         songbook changed 43 songs, and all 43 typeset pixel-identical
+         before and after on A4 and A5.
+   - [x] Chord moved back across consonants to its syllable's start (TeX
+         patterns, minima 1/1, never across a vowel, never onto another
+         chord, not in instrumentals or vowel-less words). Precision: 147 moves
+         on the finished songbook. ~60 sampled were correct syllables once
+         the hum guard (`mmm\[Hm]m`) and the collision guard (`\[G]p\[C]í`)
+         were in. They are import leftovers the hand edit missed. Applies only
+         where `lang` is set, so on drafts only to kytary songs for now.
+         Recall: Samota's draft gap 41 → 24 lines, 21 Guns 100 → 87, Jolene
+         37 → 32.
+   - [x] Idempotent: moves first, then choruses on the moved text; a second
+         pass over every tidied songbook song changes nothing.
+5. **Tier 3 `suggest`/`apply`.** The two fitting stages.
 6. **Corpus checks (`printer-gap`).** Drafts move closer to the finished
-   songs. `suggest`/`tidy` on *finished* songs propose almost nothing, and
-   every proposal there is a false positive to examine.
+   songs. `suggest` on *finished* songs proposes almost nothing, and every
+   proposal there is a false positive to examine. (`tidy` on finished songs
+   does find real work: import leftovers nobody fixed by hand.)
 
 ## Notes for the UI session
 - Exit codes changed: 1 when the song could not be read or written (it used to
