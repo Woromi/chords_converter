@@ -49,6 +49,21 @@ pub fn sniff_parser(html_content: &str) -> Option<Box<dyn SongParser>> {
     }
 }
 
+/// The songbook's name for a language a page names by its ISO code (`cs`,
+/// `en-US`). The name picks the hyphenation and the chord naming (H or B), so
+/// only languages the songbook typesets are named. Anything else is left for
+/// a person to fill in, rather than handing babel a language it never loaded.
+pub fn language_name(code: &str) -> Option<String> {
+    let primary = code.trim().split(['-', '_']).next()?.to_ascii_lowercase();
+    let name = match primary.as_str() {
+        "cs" => "czech",
+        "sk" => "slovak",
+        "en" => "english",
+        _ => return None,
+    };
+    Some(name.to_string())
+}
+
 /// The address a saved page was served from, as the page itself records it.
 /// It is what the song should name as its source — the path it was saved to
 /// says nothing to whoever reads the songbook later.

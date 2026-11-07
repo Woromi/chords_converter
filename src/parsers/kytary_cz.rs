@@ -1,5 +1,5 @@
 use super::SongParser;
-use super::text::{parse_chord, shorten_minor};
+use super::text::{english_note_name, parse_chord, shorten_minor};
 use crate::models::{Chord, Line, Part, PartType, PlacedChord, Song};
 use scraper::{ElementRef, Html, Selector, node::Node};
 
@@ -39,11 +39,29 @@ impl SongParser for KytaryCzParser {
             false => artists.join(", "),
         };
 
-        let parts: Vec<Part> = document
+        let mut parts: Vec<Part> = document
             .select(&section_selector)
             .map(parse_section)
             .filter(|part| !part.lines.is_empty())
             .collect();
+
+        // The site names every chord the Czech way, an English song's too
+        // (`B` for B flat, `H` for B), while the songbook reads a song's
+        // chords in the song's own language. Only Czech and Slovak share the
+        // site's naming; any other song's chords are renamed to match it.
+        let language = parse_language(&document);
+        if language.as_deref().is_some_and(|l| l != "czech" && l != "slovak") {
+            for chord in parts
+                .iter_mut()
+                .flat_map(|part| part.lines.iter_mut())
+                .flat_map(|line| line.chords.iter_mut())
+                .map(|placed| &mut placed.chord)
+                .filter(|chord| !chord.is_no_chord())
+            {
+                chord.root = english_note_name(&chord.root);
+                chord.bass = chord.bass.as_deref().map(english_note_name);
+            }
+        }
 
         if parts.is_empty() {
             eprintln!("Warning: no song found on {}.", url);
@@ -56,13 +74,23 @@ impl SongParser for KytaryCzParser {
             key: None,      // Not provided by the site.
             tempo: None,    // Not provided by the site.
             meter: None,    // Not provided by the site.
-            language: None, // Not provided by the site, probably Czech.
+            language,
             tuning: None,   // Not provided by the site.
             capo: parse_capo(&document),
             extra: Vec::new(),
             parts,
         }
     }
+}
+
+/// Reads the language the sheet is sung in. The site marks it on the sheet
+/// itself (`<div class="smartchordsheet" lang="en">`), for screen readers and
+/// translation tools, and it is the song's language rather than the page's:
+/// an English song sits on the Czech site with `lang="en"`.
+fn parse_language(document: &Html) -> Option<String> {
+    let sheet = Selector::parse(".smartchordsheet[lang]").ok()?;
+    let code = document.select(&sheet).next()?.value().attr("lang")?;
+    super::language_name(code)
 }
 
 /// Reads the fret the capo is on. The site writes it into its own menu, as
@@ -357,5 +385,57 @@ mod tests {
 
         assert_eq!(song.title, "Unknown Title");
         assert!(song.parts.is_empty());
+    }
+
+    #[test]
+    fn the_language_is_read_off_the_sheet() {
+        let sheet = |lang: &str| {
+            format!(
+                "<html><body><h1 class=\"sheet-title\">A Song</h1>\
+                 <div class=\"smartchordsheet notranslate\" lang=\"{lang}\"></div></body></html>"
+            )
+        };
+        let language = |lang: &str| {
+            KytaryCzParser
+                .parse("https://akordy.kytary.cz/song/a-song", &sheet(lang))
+                .language
+        };
+        assert_eq!(language("cs").as_deref(), Some("czech"));
+        assert_eq!(language("en").as_deref(), Some("english"));
+        assert_eq!(language("sk").as_deref(), Some("slovak"));
+        // A language the songbook does not typeset is left to a person.
+        assert_eq!(language("de"), None);
+    }
+
+    #[test]
+    fn a_sheet_that_names_no_language_leaves_it_open() {
+        let song = parse("", "");
+        assert_eq!(song.language, None);
+    }
+
+    #[test]
+    fn an_english_songs_czech_chord_names_are_made_english() {
+        let page = format!(
+            "<html><body><h1 class=\"sheet-title\">A Song</h1>\
+             <div class=\"smartchordsheet\" lang=\"{{}}\">\
+             <div class=\"scs-section\" data-type=\"verse\"><div>{}one {}two {}three</div></div>\
+             </div></body></html>",
+            chord("B", ""),
+            chord("H", "m7"),
+            chord("Fis", "")
+        );
+        let chords = |lang: &str| {
+            let song = KytaryCzParser.parse(
+                "https://akordy.kytary.cz/song/a-song",
+                &page.replace("{}", lang),
+            );
+            names(&song.parts[0].lines[0])
+                .into_iter()
+                .map(|(name, _)| name)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(chords("en"), ["Bb", "Bm7", "F#"]);
+        // A Czech song keeps the names the songbook reads the Czech way.
+        assert_eq!(chords("cs"), ["B", "Hm7", "Fis"]);
     }
 }

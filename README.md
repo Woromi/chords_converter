@@ -36,7 +36,7 @@ know it failed.
 ### Supported websites
 | Site | Metadata read besides the song |
 | --- | --- |
-| `akordy.kytary.cz` | capo |
+| `akordy.kytary.cz` | capo, language |
 | `pisnicky-akordy.cz` | key |
 | `blivnik.cz` | capo, chord diagrams, the date the sheet was added, the writer's remark |
 | `ultimate-guitar.com` | key, capo, tuning, a tempo or time signature the tabber's remark names, the remark itself |

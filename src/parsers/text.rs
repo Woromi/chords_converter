@@ -376,6 +376,33 @@ fn expand_tabs(line: &str) -> String {
     out
 }
 
+/// Writes a note named the Czech way under its English name: `H` is B, `B` is
+/// B flat, `Fis` is F#, `Es` is Eb. Whatever follows the note (`Hm7`) is left
+/// as it is, and a note that is spelled alike in both (`C`, `F#`) is too.
+/// For a site that names every chord the Czech way, even an English song's.
+pub(crate) fn english_note_name(note: &str) -> String {
+    let Some(root) = match_root(note) else {
+        return note.to_string();
+    };
+    let english = match root {
+        "H" => "B",
+        "B" => "Bb",
+        "Cis" => "C#",
+        "Dis" => "D#",
+        "Fis" => "F#",
+        "Gis" => "G#",
+        "Ais" => "A#",
+        "Ces" => "Cb",
+        "Des" => "Db",
+        "Fes" => "Fb",
+        "Ges" => "Gb",
+        "Es" => "Eb",
+        "As" => "Ab",
+        same => same,
+    };
+    format!("{}{}", english, &note[root.len()..])
+}
+
 /// Returns the root that `s` starts with, if any.
 fn match_root(s: &str) -> Option<&'static str> {
     ROOTS.iter().copied().find(|r| s.starts_with(r))
