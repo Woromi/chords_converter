@@ -41,12 +41,11 @@ impl SongPrinter for LatexPrinter {
             writeln!(
                 writer,
                 "    % {}={{{}}},",
-                label.to_lowercase(),
-                escape(value)
+                one_line(&label.to_lowercase()),
+                one_line(&escape(value))
             )?;
         }
         writeln!(writer, "]")?;
-        writeln!(writer, "\\MultiwordChords")?;
         writeln!(writer)?;
 
         // 2. Iterate through parts
@@ -95,7 +94,7 @@ impl SongPrinter for LatexPrinter {
                 }
                 PartType::Other(name) => {
                     writeln!(writer, "\\beginverse*")?;
-                    writeln!(writer, "% [{}]", name.to_uppercase())?;
+                    writeln!(writer, "% [{}]", one_line(&name.to_uppercase()))?;
                     "\\endverse*"
                 }
             };
@@ -276,7 +275,31 @@ fn chord_name(chord: &Chord) -> String {
         name.push('/');
         name.push_str(&flat_note(bass));
     }
-    name
+    chord_safe(name)
+}
+
+/// Keeps only what a chord name is made of. A chord reaches LaTeX unescaped,
+/// inside `\[...]` — and its text comes from the web page — so a page could
+/// otherwise end the chord with `]` and follow it with any TeX it likes, which a
+/// build with `-shell-escape` would run (`\directlua{os.execute(...)}`).
+/// Letters, digits, the accidentals and the punctuation of chord qualities
+/// pass, as does anything beyond ASCII (`°`, `ø`, `Δ`); markup does not.
+fn chord_safe(name: String) -> String {
+    let allowed = |c: char| {
+        c.is_ascii_alphanumeric() || "#&+-()/.*'".contains(c) || (!c.is_ascii() && !c.is_control())
+    };
+    if name.chars().all(allowed) {
+        return name;
+    }
+    let safe: String = name.chars().filter(|&c| allowed(c)).collect();
+    eprintln!("Warning: the chord {name:?} holds characters no chord has; written as {safe:?}");
+    safe
+}
+
+/// A comment ends at the end of its line, so text set in one must not break
+/// the line: whatever followed the break would be read as LaTeX again.
+fn one_line(text: &str) -> String {
+    text.replace(['\r', '\n'], " ")
 }
 
 /// Rewrites the flat of a note name for the `songs` package, which makes `&`
@@ -524,6 +547,47 @@ mod tests {
         let mut out = Vec::new();
         LatexPrinter.print(song, &mut out).unwrap();
         String::from_utf8(out).unwrap()
+    }
+
+    #[test]
+    fn a_chord_cannot_carry_latex() {
+        let part = verse(vec![line(
+            "and away",
+            &[(0, "]\\directlua{os.execute(\"rm -rf ~\")}\\[")],
+        )]);
+        let rendered = render(&part).join("\n");
+        assert!(!rendered.contains("\\directlua"), "{rendered}");
+        assert!(!rendered.contains('{'), "{rendered}");
+        assert_eq!(rendered.matches("\\[").count(), 1, "{rendered}");
+        assert_eq!(rendered.matches(']').count(), 1, "{rendered}");
+    }
+
+    #[test]
+    fn real_chord_names_pass_unchanged() {
+        for name in [
+            "C", "F#m7", "Bbmaj7", "C#m7b5", "Dsus4", "A7(b9)", "G/H", "E°", "CΔ7", "Hmi",
+        ] {
+            let chord = Chord {
+                root: name.to_string(),
+                modifier: None,
+                bass: None,
+            };
+            assert_eq!(chord_name(&chord), flat_note(name), "{name}");
+        }
+    }
+
+    #[test]
+    fn comments_stay_on_one_line() {
+        let mut song = song(None, None);
+        song.extra = vec![("Year\nX".to_string(), "1980\n\\directlua{x}".to_string())];
+        song.parts = vec![Part {
+            part_type: PartType::Other("solo\n\\directlua{x}".to_string()),
+            lines: Vec::new(),
+        }];
+        let out = header(&song);
+        for line in out.lines().filter(|l| l.contains("directlua")) {
+            assert!(line.trim_start().starts_with('%'), "{line:?} in\n{out}");
+        }
     }
 
     #[test]
