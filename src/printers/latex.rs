@@ -123,11 +123,15 @@ impl SongPrinter for LatexPrinter {
 }
 
 /// How a `"` of the lyrics reaches LaTeX: csquotes' `\enquote{…}`, opened by
-/// the first mark of a quotation and closed by the one that answers it.
+/// the first mark of a quotation and closed by the one that answers it. A mark
+/// nothing answers is printed as the character it is: an `\enquote{` that is
+/// never closed would swallow the end of the part and stop the build.
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum QuoteMark {
     Open,
     Close,
+    /// Babel's Czech makes `"` an active shorthand, so not the bare character.
+    Stray,
 }
 
 impl QuoteMark {
@@ -135,6 +139,7 @@ impl QuoteMark {
         match self {
             QuoteMark::Open => "\\enquote{",
             QuoteMark::Close => "}",
+            QuoteMark::Stray => "\\textquotedbl{}",
         }
     }
 }
@@ -142,8 +147,10 @@ impl QuoteMark {
 /// Resolves every `"` of a part, line by line and in reading order. A
 /// quotation runs from each odd mark to the one after it, wherever that one
 /// sits. Pairing stops at the part, so a stray mark cannot carry over into the
-/// rest of the song.
+/// rest of the song. When the part holds an odd number of marks, the last one
+/// is the one left without a partner, and it stays a plain mark.
 fn quote_marks(part: &Part) -> Vec<Vec<QuoteMark>> {
+    let total: usize = part.lines.iter().map(|l| l.lyrics.matches('"').count()).sum();
     let mut seen = 0;
     part.lines
         .iter()
@@ -152,7 +159,9 @@ fn quote_marks(part: &Part) -> Vec<Vec<QuoteMark>> {
                 .matches('"')
                 .map(|_| {
                     seen += 1;
-                    if seen % 2 == 1 {
+                    if seen == total && total % 2 == 1 {
+                        QuoteMark::Stray
+                    } else if seen % 2 == 1 {
                         QuoteMark::Open
                     } else {
                         QuoteMark::Close
@@ -464,17 +473,38 @@ mod tests {
     }
 
     #[test]
-    fn a_quotation_the_source_never_closes_opens_one_all_the_same() {
+    fn a_quotation_the_source_never_closes_stays_a_plain_mark() {
         let part = verse(vec![line("He said \"hello", &[])]);
-        assert_eq!(render(&part), ["He said \\enquote{hello"]);
+        assert_eq!(render(&part), ["He said \\textquotedbl{}hello"]);
+    }
+
+    #[test]
+    fn only_the_mark_left_over_stays_plain() {
+        let part = verse(vec![
+            line("say \"no\" and", &[]),
+            line("(\"You! Stand still!)", &[(1, "Dm")]),
+        ]);
+        let rendered = render(&part);
+        assert_eq!(rendered[0], "say \\enquote{no} and");
+        // The chord moves past the mark onto the word it is sung on.
+        assert_eq!(rendered[1], "(\\textquotedbl{}\\[Dm]You! Stand still!)");
+    }
+
+    #[test]
+    fn every_part_keeps_its_braces_balanced() {
+        for lyrics in ["\"a", "\"a\" \"b", "a\" b\" c\"", "\"\"\""] {
+            let part = verse(vec![line(lyrics, &[]), line("x\"", &[])]);
+            let text = render(&part).join("\n");
+            assert_eq!(text.matches('{').count(), text.matches('}').count(), "{text}");
+        }
     }
 
     #[test]
     fn a_stray_mark_does_not_reach_into_the_next_part() {
         let first = verse(vec![line("\"Sir,", &[])]);
         let second = verse(vec![line("he walks on\"", &[])]);
-        assert_eq!(render(&first), ["\\enquote{Sir,"]);
-        assert_eq!(render(&second), ["he walks on\\enquote{"]);
+        assert_eq!(render(&first), ["\\textquotedbl{}Sir,"]);
+        assert_eq!(render(&second), ["he walks on\\textquotedbl{}"]);
     }
 
     #[test]
