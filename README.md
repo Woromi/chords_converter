@@ -100,6 +100,7 @@ ones chosen:
 ```
 cargo run -- suggest Song.tex --fit a5 --measure
 cargo run -- apply Song.tex --id chordsoff@31          # then suggest again
+cargo run -- join Song.tex                             # lines joined in pairs, checked
 ```
 
 ```
@@ -147,14 +148,25 @@ Song.tex
   gets more chords back than it loses. The saving is an estimate in printed
   lines, a chord row counting as one; a change that saves none is not
   offered.
-- **Joining lines.** Every two lines of every part of a kind (all verses,
-  say) become one: fewer, longer lines, all of one musical length again. It
-  is offered only if every part of the kind can be joined alike (an even
-  number of lines, and no comment, chord switch, `\textnote`, `\if…` or
-  `\rep` before a part's last line in the way), and only with `--measure`:
-  the joined song is typeset, and no line may come out too wide on A4 or A5
-  (nor be one already). It changes A4 too, but loses nothing there, so it is
-  offered while fitting A5 as well.
+- **Restructuring.** A part with the words of the latest chorus that isn't
+  a chorus (a modulated chorus a site marked "key change" comes in as
+  unnumbered verses) may be the chorus sung again. Only a person can tell
+  (the same words need not be the same melody), so each such part is a
+  proposal of its own, and it only makes the part a chorus, its chords
+  kept. The rest is the other rules, a step at a time: `tidy` makes a
+  chorus typed out again `\insertchorus`, and `suggest` then offers
+  `\insertchorus*`. It changes what the parts are, so it is listed apart
+  (`category: "restructure"` in the JSON), and it is offered although it
+  saves no line by itself.
+- **Joining lines: `join`, a command of its own.** Every two lines of every
+  part of a kind (all verses, say) become one: fewer, longer lines, all of
+  one musical length again. It is offered only if every part of the kind
+  can be joined alike (an even number of lines, and no comment, chord
+  switch, `\textnote`, `\if…` or `\rep` before a part's last line in the
+  way), and only once the joined song is typeset with no line too wide on
+  A4 or A5 (nor one already). That is a typesetting run per kind of part,
+  seconds on a long song, so `suggest` leaves it out and `join` does it on
+  request. Its output is `suggest`'s, and its ids work with `apply`.
 - **Chords stay spread out.** The first part of a kind keeps its chords, and
   a part that loses them must still have a chorded neighbour of its kind.
   This holds on each paper, for each proposal and for any chosen together.

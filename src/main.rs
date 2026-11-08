@@ -445,6 +445,7 @@ fn suggest(
     measure: bool,
     songbook: Option<&Path>,
     json: bool,
+    joins: bool,
 ) -> Result<(), String> {
     use tex::fit::Stage;
     let text = fs::read_to_string(file)
@@ -468,7 +469,7 @@ fn suggest(
     let mut stages = vec![Stage::AllPapers, Stage::SmallPaper];
     let mut fits = None;
     let mut note = String::new();
-    match (fit, measure) {
+    match (fit, measure && !joins) {
         (Some("a4"), false) => stages = vec![Stage::AllPapers],
         (Some("a4"), true) => {
             stages = vec![Stage::AllPapers];
@@ -500,26 +501,16 @@ fn suggest(
     } else if fit.is_some() && measure {
         fits = Some(false);
     }
-    // Joined lines act on every paper but lose nothing there, so they are
-    // offered whichever stage is asked for, and only once the joined song
-    // was typeset: no line it lengthens may be too wide already, and none
-    // may come out too wide, on either paper.
-    if measure && !stages.is_empty() && all.iter().any(|p| p.needs_width_check()) {
+    // Joined lines are checked by typesetting the joined song, a run per
+    // kind of part, which is too slow for every suggest: they have their
+    // own command, `join`. No line they lengthen may be too wide already,
+    // and none may come out too wide, on either paper.
+    let mut shown: Vec<&tex::fit::Proposal> = Vec::new();
+    if joins {
         for paper in ["a4", "a5"] {
             measure_on(paper)?;
         }
-    }
-    let mut shown: Vec<&tex::fit::Proposal> = Vec::new();
-    let mut unchecked_joins = false;
-    for p in &all {
-        if p.needs_width_check() {
-            if stages.is_empty() {
-                continue;
-            }
-            if !measure {
-                unchecked_joins = true;
-                continue;
-            }
+        for p in all.iter().filter(|p| p.needs_width_check()) {
             let lengthens_a_wide_line = measured
                 .values()
                 .any(|m| m.wraps.iter().any(|w| p.lengthens(w.line, w.in_chorus)));
@@ -540,13 +531,12 @@ fn suggest(
             if fits {
                 shown.push(p);
             }
-        } else if stages.contains(&p.stage) {
-            shown.push(p);
         }
-    }
-    if unchecked_joins && note.is_empty() {
-        note =
-            "Joining lines in pairs is offered only with --measure, which checks they fit.".into();
+    } else {
+        shown = all
+            .iter()
+            .filter(|p| !p.needs_width_check() && stages.contains(&p.stage))
+            .collect();
     }
 
     if json {
@@ -562,6 +552,7 @@ fn suggest(
                     "gain_lines": p.gain_lines,
                     "score": p.score,
                     "grade": p.grade(),
+                    "category": if p.is_restructure() { "restructure" } else { "fit" },
                     "sources": p.sources.iter().map(|s| serde_json::json!({
                         "line": s.line,
                         "start": s.span.start,
@@ -647,17 +638,25 @@ fn suggest(
             paper.to_uppercase(),
             paper
         ));
+    } else if shown.is_empty() && joins {
+        out.push_str("  No lines can be joined in pairs and still fit A4 and A5.\n");
     } else if shown.is_empty() {
         out.push_str("  Nothing left to propose.\n");
     } else {
         out.push_str("  Proposals by paper, the most readable first (score 0-100):\n");
-        let mut stage = None;
-        for p in &shown {
-            if stage != Some(p.stage) {
-                stage = Some(p.stage);
-                out.push_str(match p.stage {
-                    Stage::AllPapers => "   for every paper:\n",
-                    Stage::SmallPaper => "   for small paper only:\n",
+        // Restructuring first, apart: it changes what the parts are.
+        let mut ordered: Vec<&&tex::fit::Proposal> =
+            shown.iter().filter(|p| p.is_restructure()).collect();
+        ordered.extend(shown.iter().filter(|p| !p.is_restructure()));
+        let mut group = None;
+        for p in ordered {
+            let this = (p.is_restructure(), p.stage);
+            if group != Some(this) {
+                group = Some(this);
+                out.push_str(match this {
+                    (true, _) => "   restructuring, the parts become what they are:\n",
+                    (false, Stage::AllPapers) => "   for every paper:\n",
+                    (false, Stage::SmallPaper) => "   for small paper only:\n",
                 });
             }
             out.push_str(&format!(
@@ -709,6 +708,7 @@ Usage:
   chords_converter convert <SOURCE> [--format FORMAT] [--tidy] [-o FILE | -o -]
   chords_converter tidy <SONG.tex> [-o FILE | -o -]
   chords_converter suggest <SONG.tex> [--fit a4|a5] [--measure] [--songbook DIR] [--json]
+  chords_converter join <SONG.tex> [--songbook DIR] [--json]
   chords_converter apply <SONG.tex> --id ID [--id ID ...] [-o FILE | -o -]
 
 SOURCE   a URL of a supported website, a local text file (chords over
@@ -727,15 +727,16 @@ to the draft.
 
 suggest lists changes to what a song prints, for a person to accept or
 reject, rated by how readable they leave the song (0-100: good, fair,
-poor, last resort) and most readable first: lines joined in pairs where
-every part of a kind can take it and they still fit (only with --measure,
-which typesets the joined song), a chorus shortened to its reminder line,
-chords hidden where they repeat ones shown just before (the nearer, the
-better, and late in the song rather than early), a smaller type on small
-paper.
+poor, last resort) and most readable first: a chorus shortened to its
+reminder line, chords hidden where they repeat ones shown just before
+(the nearer, the better, and late in the song rather than early), a
+smaller type on small paper.
 --fit a4|a5 keeps to the ones that help fit that paper; --measure typesets
 the song with the songbook's own scripts/checkpaper.py (the songbook is
 ../ZubuvZpevnik unless --songbook says otherwise) and says whether it fits.
+join offers every two lines of each part of a kind joined into one, where
+every part of the kind can take it, after typesetting the joined song to
+check no line comes out too wide on A4 or A5 (slow: a run per kind).
 apply makes the chosen ones; apply one, then ask again.";
 
 /// What the command line asks for.
@@ -762,6 +763,12 @@ enum Command {
         songbook: Option<PathBuf>,
         json: bool,
     },
+    /// Lines joined in pairs, each checked by typesetting the joined song.
+    Join {
+        file: PathBuf,
+        songbook: Option<PathBuf>,
+        json: bool,
+    },
     Apply {
         file: PathBuf,
         ids: Vec<String>,
@@ -781,6 +788,20 @@ fn parse_args(args: &[String]) -> Result<Command, String> {
         "-V" | "--version" | "version" => Ok(Command::Version),
         "convert" => parse_convert(&args[1..]),
         "tidy" => parse_tidy(&args[1..]),
+        "join" => match parse_suggest(&args[1..])? {
+            Command::Suggest {
+                file,
+                fit: None,
+                songbook,
+                json,
+                ..
+            } => Ok(Command::Join {
+                file,
+                songbook,
+                json,
+            }),
+            _ => Err("join takes no --fit: it checks A4 and A5 both.".to_string()),
+        },
         "suggest" => parse_suggest(&args[1..]),
         "apply" => parse_apply(&args[1..]),
         _ => match args {
@@ -967,7 +988,19 @@ async fn main() {
             measure,
             songbook,
             json,
-        } => suggest(&file, fit.as_deref(), measure, songbook.as_deref(), json),
+        } => suggest(
+            &file,
+            fit.as_deref(),
+            measure,
+            songbook.as_deref(),
+            json,
+            false,
+        ),
+        Command::Join {
+            file,
+            songbook,
+            json,
+        } => suggest(&file, None, true, songbook.as_deref(), json, true),
         Command::Apply { file, ids, output } => apply_file(&file, &ids, &output),
         Command::Convert {
             source,
@@ -1162,6 +1195,15 @@ mod tests {
         );
         assert!(parse_args(&args(&["suggest", "S.tex", "--fit", "letter"])).is_err());
         assert!(parse_args(&args(&["suggest"])).is_err());
+        assert_eq!(
+            parse_args(&args(&["join", "S.tex", "--json"])),
+            Ok(Command::Join {
+                file: "S.tex".into(),
+                songbook: None,
+                json: true,
+            })
+        );
+        assert!(parse_args(&args(&["join", "S.tex", "--fit", "a5"])).is_err());
 
         assert_eq!(
             parse_args(&args(&[

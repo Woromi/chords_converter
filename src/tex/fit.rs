@@ -98,6 +98,12 @@ const POOR: u8 = 35;
 const EARLY: u8 = 5;
 
 impl Proposal {
+    /// Whether it changes what the parts are, rather than only fitting the
+    /// page: a program marks these apart.
+    pub fn is_restructure(&self) -> bool {
+        self.kind == "restructure"
+    }
+
     /// Whether it joins lines, and so may be offered only once the joined
     /// song was typeset with no line too wide.
     pub fn needs_width_check(&self) -> bool {
@@ -292,11 +298,13 @@ pub fn proposals(text: &str) -> Vec<Proposal> {
     let names = Names::of(text, &scan);
     proposals.extend(chords_off(&names, &infos, Stage::AllPapers));
     proposals.extend(chorus_reminders(text, &scan, &infos, &names));
+    proposals.extend(choruses_in_disguise(&infos, &names));
     proposals.extend(chords_off(&names, &infos, Stage::SmallPaper));
     proposals.extend(smaller_type(text, &scan, &infos));
     proposals.extend(joined_lines(&names, &infos));
 
-    proposals.retain(|p| p.gain_lines > 0);
+    // Restructuring is worth it even when it saves nothing.
+    proposals.retain(|p| p.gain_lines > 0 || p.is_restructure());
     let rank = |p: &Proposal| {
         (
             p.stage,
@@ -967,6 +975,70 @@ fn joined_lines(names: &Names, infos: &[PartInfo]) -> Vec<Proposal> {
             effects: Vec::new(),
             sources: Vec::new(),
             joins: Some((spans, kind == "chorus")),
+        });
+    }
+    proposals
+}
+
+/// A part that may be the chorus sung again but typed as something else (a
+/// site marked a modulated chorus "key change", and the converter made it
+/// an unnumbered verse): the same words as the latest chorus. Only a person
+/// can tell, since the same words need not be the same melody, so each such
+/// part is its own proposal, and all it does is make the part a chorus,
+/// with its own chords (decided with the user). The rest follows from the
+/// other rules, one step at a time: `tidy` makes a chorus typed out again
+/// `\insertchorus`, and `suggest` offers its reminder. It changes what the
+/// parts are, not only how long the song is, so it is a kind of its own,
+/// `restructure`, for a program to mark apart.
+fn choruses_in_disguise(infos: &[PartInfo], names: &Names) -> Vec<Proposal> {
+    let text = names.text;
+    let mut proposals = Vec::new();
+    let mut latest: Option<usize> = None;
+    for (i, info) in infos.iter().enumerate() {
+        if info.part.kind == "chorus" {
+            latest = Some(i);
+            continue;
+        }
+        let Some(chorus) = latest else { continue };
+        if info.part.kind.starts_with("instrumental")
+            || info.part.conditional
+            || infos[chorus].part.conditional
+            || infos[chorus].words.trim().is_empty()
+            || info.words != infos[chorus].words
+        {
+            continue;
+        }
+        // The opening macro becomes the chorus's, its setup kept, and the
+        // closing one with it.
+        let bracket = infos[chorus]
+            .part
+            .number
+            .map_or(String::new(), |n| format!("[{n}]"));
+        let end = text[..info.part.span.end].rfind("\\end").unwrap();
+        proposals.push(Proposal {
+            id: format!("restructure@{}", info.part.line),
+            kind: "restructure",
+            stage: Stage::AllPapers,
+            line: info.part.line,
+            description: format!(
+                "{} has the words of {}: if it is the chorus sung again, make it a chorus",
+                names.parts[i], names.parts[chorus]
+            ),
+            gain_lines: 0,
+            score: REMINDER,
+            edits: vec![
+                Edit {
+                    span: info.part.span.start..info.part.opening_rest.start,
+                    replacement: format!("\\beginchorus{bracket}"),
+                },
+                Edit {
+                    span: end..info.part.span.end,
+                    replacement: "\\endchorus".to_string(),
+                },
+            ],
+            effects: Vec::new(),
+            sources: vec![source_of(infos[chorus].part)],
+            joins: None,
         });
     }
     proposals
@@ -1754,6 +1826,49 @@ mod tests {
             .collect();
         assert_eq!(plain_verses(song(&pairs), 1), [6]);
         assert_eq!(plain_verses(song(&pairs), 3), [2, 4, 6]);
+    }
+
+    #[test]
+    fn a_part_with_the_choruss_words_may_become_a_chorus() {
+        // A modulated chorus came in as unnumbered verses.
+        let up = ["\\[G]Refrén \\[A]zní", "\\[D]a zní"];
+        let text = song(
+            &[
+                part("\\beginchorus", &R),
+                part("\\beginverse", &V),
+                part("\\beginverse*", &up),
+                part("\\beginverse*", &up),
+            ]
+            .concat(),
+        );
+        let found: Vec<Proposal> = proposals(&text)
+            .into_iter()
+            .filter(|p| p.is_restructure())
+            .collect();
+        // Each is a decision of its own.
+        let ids: Vec<&str> = found.iter().map(|p| p.id.as_str()).collect();
+        assert_eq!(ids, ["restructure@20", "restructure@15"]);
+        let first = found.iter().find(|p| p.id == "restructure@15").unwrap();
+        assert_eq!(
+            first.description,
+            "the 1st unnumbered verse has the words of the 1st chorus: if it is the chorus sung again, make it a chorus"
+        );
+        // It only becomes a chorus, with its chords; the copy after it is
+        // then a chorus typed out again, which tidy reprints.
+        let out = apply(&text, &[first]).unwrap();
+        assert!(
+            out.contains("\\beginchorus\n    \\[G]Refrén \\[A]zní\n    \\[D]a zní\n\\endchorus\n\n\\beginverse*\n"),
+            "{out}"
+        );
+        let second = proposals(&out)
+            .into_iter()
+            .find(|p| p.id == "restructure@20")
+            .unwrap();
+        assert!(second.description.contains("the words of the 2nd chorus"));
+
+        // Before any chorus: nothing to restructure.
+        let text = song(&[part("\\beginverse*", &R), part("\\beginchorus", &R)].concat());
+        assert!(!proposals(&text).iter().any(|p| p.is_restructure()));
     }
 
     #[test]

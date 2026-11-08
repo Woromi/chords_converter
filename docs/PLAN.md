@@ -156,9 +156,18 @@ part of the identical-output check `\insertchorus` has.
          every two lines of every part of a kind into one, offered only when
          every part of the kind can take it (even number of lines; no
          comment, switch, `\textnote`, `\if` or inner `\rep` in the way)
-         and, with `--measure`, the joined song typesets with no line too
-         wide on A4 or A5 and no more pages. Rated 90: every word and chord
-         stays. Offered in either stage, since it loses nothing on A4.
+         the joined song typesets with no line too wide on A4 or A5 and no
+         more pages. Rated 90: every word and chord stays. Its own command,
+         `join` (0.5.0): the checks took Letter to Dana's `suggest` from
+         0.8 s to 6.4 s on every click.
+   - [x] Restructuring (0.5.0, suggested by the user 2026-11-08): parts
+         with the latest chorus's words that aren't choruses may become a
+         chorus, each its own proposal (the same words need not be the same
+         melody), and nothing more; `tidy` and `suggest` do the rest
+         (decided with the user: doing it all at once risks more).
+         `category: "restructure"`. Letter to Dana: three "key change"
+         unnumbered verses → three choruses → `tidy`: a chorus and two
+         `\insertchorus` → `suggest`: `\insertchorus*` for each.
    - [ ] Re-breaking lines at other points stays a human judgement;
          `suggest` names the too-wide lines.
 6. **Corpus checks (`printer-gap`).** Drafts move closer to the finished
