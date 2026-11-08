@@ -82,6 +82,9 @@ pub struct Proposal {
 /// nothing is looked up elsewhere.
 const JOINED: u8 = 90;
 const REMINDER: u8 = 80;
+/// Rows played again printed once with `(×n)`: nothing is looked up
+/// elsewhere, only counted.
+const REPEATED_ROWS: u8 = 85;
 const CHORDS_OFF: u8 = 70;
 const SMALLER_TYPE: u8 = 20;
 /// Taken off for each line between a part without chords and the nearest
@@ -313,6 +316,7 @@ pub fn proposals(text: &str) -> Vec<Proposal> {
     proposals.extend(chords_off(&names, &infos, Stage::AllPapers));
     proposals.extend(chorus_reminders(text, &scan, &infos, &names));
     proposals.extend(choruses_in_disguise(&infos, &names));
+    proposals.extend(repeated_rows(text, &infos, &names));
     proposals.extend(typos::typos(&infos, &names, scan.lang.as_deref()));
     proposals.extend(chords_off(&names, &infos, Stage::SmallPaper));
     proposals.extend(smaller_type(text, &scan, &infos));
@@ -890,16 +894,15 @@ fn chorus_reminders(text: &str, scan: &Scan, infos: &[PartInfo], names: &Names) 
 /// `suggest` offers it only after measuring (`needs_width_check`).
 fn joined_lines(names: &Names, infos: &[PartInfo]) -> Vec<Proposal> {
     let text = names.text;
-    let mut kinds: Vec<&str> = infos
-        .iter()
-        .map(|i| i.part.kind.as_str())
-        .filter(|k| !k.starts_with("instrumental"))
-        .collect();
+    let mut kinds: Vec<&str> = infos.iter().map(|i| i.part.kind.as_str()).collect();
     kinds.sort();
     kinds.dedup();
 
     let mut proposals = Vec::new();
     'kind: for kind in kinds {
+        // An instrumental's rows join bar to bar, and a row with its own
+        // `\rep` would come to repeat both.
+        let bars = kind.starts_with("instrumental");
         let parts: Vec<&PartInfo> = infos.iter().filter(|i| i.part.kind == kind).collect();
         let mut edits = Vec::new();
         let mut gain = 0;
@@ -947,22 +950,30 @@ fn joined_lines(names: &Names, infos: &[PartInfo]) -> Vec<Proposal> {
                     || code.contains("\\else")
                     || code.contains("\\fi")
                     // A line repeated would become two.
-                    || (!last && has_word(code, "rep"))
+                    || ((!last || bars) && has_word(code, "rep"))
                 {
                     continue 'kind;
                 }
             }
             for pair in sung.chunks(2) {
-                let end = pair[0].start + text[pair[0].clone()].trim_end().len();
+                let first = text[pair[0].clone()].trim_end();
+                let end = pair[0].start + first.len();
                 let next = &text[pair[1].clone()];
-                let start = pair[1].start + (next.len() - next.trim_start().len());
+                let mut start = pair[1].start + (next.len() - next.trim_start().len());
+                // `| a | b |` and `| c | d |` meet at one bar line.
+                if bars && first.ends_with('|') && text[start..].starts_with('|') {
+                    start += 1;
+                    start += text[start..].len() - text[start..].trim_start().len();
+                }
                 edits.push(Edit {
                     span: end..start,
                     replacement: " ".to_string(),
                 });
                 let chorded = |r: &Range<usize>| !chord_names(code_of(&text[r.clone()])).is_empty();
                 gain += 1;
-                if info.switch == Chords::Shown && chorded(&pair[0]) && chorded(&pair[1]) {
+                // Two chord rows over two lyric rows become one of each; an
+                // instrumental's row is its chords alone.
+                if !bars && info.switch == Chords::Shown && chorded(&pair[0]) && chorded(&pair[1]) {
                     gain += 1;
                 }
                 pairs += 1;
@@ -1081,6 +1092,87 @@ fn chords_close(latest: &PartInfo, repeat: &PartInfo) -> bool {
         row = next;
     }
     row[b.len()] <= 1
+}
+
+/// An instrumental's row played several times in a row is printed once,
+/// with `\rep{n}` at its end (suggested by the user): `| \[Am]\[] | … |`
+/// three times becomes `| \[Am]\[] | … | \rep{3}`. A row that already
+/// ends with `\rep{k}` counts k times. Rows that replay chords with `^`
+/// are left alone: each `^` plays the next chord remembered, so two rows
+/// written alike play different chords.
+fn repeated_rows(text: &str, infos: &[PartInfo], names: &Names) -> Vec<Proposal> {
+    // A row's code without its own `\rep{k}`, and k.
+    let counted = |code: &str| -> (String, usize) {
+        let code = code.trim();
+        if let Some(head) = code.strip_suffix('}')
+            && let Some(at) = head.rfind("\\rep{")
+            && let Ok(k) = head[at + 5..].trim().parse::<usize>()
+        {
+            return (head[..at].trim_end().to_string(), k);
+        }
+        (code.to_string(), 1)
+    };
+    let mut proposals = Vec::new();
+    for (i, info) in infos.iter().enumerate() {
+        if !info.part.kind.starts_with("instrumental") || info.part.conditional {
+            continue;
+        }
+        // The rows: byte range of the line (no newline), its code, its count.
+        let body = info.part.body.clone();
+        let mut rows: Vec<(Range<usize>, String, usize, bool)> = Vec::new();
+        let mut at = body.start;
+        for raw in text[body.clone()].split_inclusive('\n') {
+            let line = raw.trim_end_matches(['\n', '\r']);
+            let code = code_of(line);
+            let commented = code.len() != line.len();
+            if !code.trim().is_empty() {
+                let (base, k) = counted(code);
+                rows.push((at..at + line.len(), base, k, commented));
+            }
+            at += raw.len();
+        }
+        let mut edits = Vec::new();
+        let mut gain = 0;
+        let mut first_line = None;
+        let mut k = 0;
+        while k < rows.len() {
+            let (span, base, _, commented) = &rows[k];
+            let mut end = k + 1;
+            while end < rows.len() && rows[end].1 == *base && !rows[end].3 {
+                end += 1;
+            }
+            if end - k > 1 && !commented && !base.contains('^') {
+                let total: usize = rows[k..end].iter().map(|r| r.2).sum();
+                let line = &text[span.clone()];
+                let indent = &line[..line.len() - line.trim_start().len()];
+                edits.push(Edit {
+                    span: span.start..rows[end - 1].0.end,
+                    replacement: format!("{indent}{base} \\rep{{{total}}}"),
+                });
+                gain += end - k - 1;
+                first_line.get_or_insert(text[..span.start].matches('\n').count() + 1);
+            }
+            k = end;
+        }
+        let Some(line) = first_line else { continue };
+        proposals.push(Proposal {
+            id: format!("rep@{line}"),
+            kind: "rep",
+            stage: Stage::AllPapers,
+            line,
+            description: format!(
+                "{} plays a row again right after itself: print it once with \\rep{{n}}",
+                names.parts[i]
+            ),
+            gain_lines: gain,
+            score: REPEATED_ROWS,
+            edits,
+            effects: Vec::new(),
+            sources: Vec::new(),
+            joins: None,
+        });
+    }
+    proposals
 }
 
 /// The last resort on small paper: the whole song a type size smaller
@@ -1918,6 +2010,69 @@ mod tests {
         // Before any chorus: nothing to restructure.
         let text = song(&[part("\\beginverse*", &R), part("\\beginchorus", &R)].concat());
         assert!(!proposals(&text).iter().any(|p| p.kind == "restructure"));
+    }
+
+    #[test]
+    fn rows_played_again_print_once_with_their_count() {
+        let row = "| \\[Am]\\[] | \\[G]\\[] |";
+        let text = song(&part(
+            "\\begininstrumental",
+            &[
+                row,
+                row,
+                &format!("{row} \\rep{{2}}"),
+                "| \\[C]\\[] | \\[F]\\[] |",
+                row,
+            ],
+        ));
+        let p = proposals(&text)
+            .into_iter()
+            .find(|p| p.kind == "rep")
+            .unwrap();
+        assert_eq!(p.id, "rep@6");
+        assert_eq!(p.gain_lines, 2);
+        assert_eq!(p.grade(), "good");
+        let out = apply(&text, &[&p]).unwrap();
+        assert!(
+            out.contains(&format!(
+                "\\begininstrumental\n    {row} \\rep{{4}}\n    | \\[C]\\[] | \\[F]\\[] |\n    {row}\n\\endinstrumental"
+            )),
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn rows_that_replay_chords_are_not_alike() {
+        let row = "| ^\\[] | ^\\[] |";
+        let text = song(&part("\\begininstrumental", &[row, row]));
+        assert!(!proposals(&text).iter().any(|p| p.kind == "rep"));
+        // Nor are sung lines: a repeated sung line is the singer's.
+        let text = song(&part("\\beginverse", &["\\[C]La la", "\\[C]La la"]));
+        assert!(!proposals(&text).iter().any(|p| p.kind == "rep"));
+    }
+
+    #[test]
+    fn instrumental_rows_join_at_one_bar_line() {
+        let text = song(&part(
+            "\\begininstrumental",
+            &["| \\[Am]\\[] | \\[G]\\[] |", "| \\[C]\\[] | \\[F]\\[] |"],
+        ));
+        let p = proposals(&text)
+            .into_iter()
+            .find(|p| p.kind == "joinlines")
+            .unwrap();
+        assert_eq!(p.gain_lines, 1);
+        let out = apply(&text, &[&p]).unwrap();
+        assert!(
+            out.contains("    | \\[Am]\\[] | \\[G]\\[] | \\[C]\\[] | \\[F]\\[] |\n"),
+            "{out}"
+        );
+        // A row repeated on its own would come to repeat both.
+        let text = song(&part(
+            "\\begininstrumental",
+            &["| \\[Am]\\[] |", "| \\[C]\\[] | \\rep{2}"],
+        ));
+        assert!(!proposals(&text).iter().any(|p| p.kind == "joinlines"));
     }
 
     #[test]

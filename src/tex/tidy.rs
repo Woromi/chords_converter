@@ -27,9 +27,16 @@ pub struct Change {
 pub fn tidy(text: &str) -> (String, Vec<Change>) {
     // Spaces first: no rule after makes a run of them, and none of them
     // takes or adds a line, so the lines need no mapping back.
-    let spaces = collapse_spaces(text);
+    let mut spaces = collapse_spaces(text);
     let spaced = apply(text, &spaces);
     let text = spaced.as_str();
+
+    // A chord between two words gets its space before it, on the spaced
+    // text; it adds no line either.
+    let between = chords_between_words(text, &scan(text));
+    let apart = apply(text, &between);
+    let text = apart.as_str();
+    spaces.extend(between);
 
     // Setup switches go onto the opening line next, so every rule after
     // finds them in one place.
@@ -81,6 +88,61 @@ pub fn tidy(text: &str) -> (String, Vec<Change>) {
     changes.extend(later);
     changes.sort_by_key(|c| c.line);
     (tidied, changes)
+}
+
+/// A chord written right after a word and before the space to the next one,
+/// `dál\[G] a sál`, gets a space before it: `dál \[G] a sál` (the user).
+/// Glued to the word, it belongs to neither: with `\chordsoff` the line
+/// reads differently than with chords. Chords at the end of a line, `^` and
+/// `\[]` slots, instrumentals and chords inside a word stay as they are.
+fn chords_between_words(text: &str, scan: &super::Scan) -> Vec<Change> {
+    let mut changes = Vec::new();
+    for part in &scan.parts {
+        if part.kind.starts_with("instrumental") {
+            continue;
+        }
+        let mut at = part.body.start;
+        for raw in text[part.body.clone()].split_inclusive('\n') {
+            let code = code_of(raw);
+            let line = text[..at].matches('\n').count() + 1;
+            let mut search = 0;
+            while let Some(found) = code[search..].find("\\[") {
+                let start = search + found;
+                // The whole group of chords written together.
+                let mut end = start;
+                while code[end..].starts_with("\\[") {
+                    match code[end..].find(']') {
+                        Some(close) => end += close + 1,
+                        None => break,
+                    }
+                }
+                search = end.max(start + 2);
+                let before = code[..start].chars().next_back();
+                let glued = before.is_some_and(|c| {
+                    !c.is_whitespace() && !matches!(c, ']' | '{' | '~' | '|' | '^' | '(')
+                });
+                let group = &code[start..end];
+                let rest = &code[end..];
+                let spaced = rest.trim_start();
+                let text_after = rest.starts_with(' ')
+                    && !spaced.is_empty()
+                    && (!spaced.starts_with('\\')
+                        || spaced.starts_with("\\enquote")
+                        || spaced.starts_with("\\multivoice"));
+                if glued && text_after && !group.contains("\\[]") {
+                    changes.push(Change {
+                        span: at + start..at + start,
+                        replacement: " ".to_string(),
+                        line,
+                        description: format!("{group} stands between two words: a space before it"),
+                        removed_lines: 0,
+                    });
+                }
+            }
+            at += raw.len();
+        }
+    }
+    changes
 }
 
 /// Runs of spaces become one space, and spaces ending a line go: TeX reads
@@ -948,6 +1010,20 @@ mod tests {
             chorus("\\chordsoff", BODY, ""),
         ]);
         assert_eq!(tidy(&both).1.len(), 1);
+    }
+
+    #[test]
+    fn a_chord_between_two_words_gets_a_space_before_it() {
+        let text = "\\beginsong{T}[\n]\n\\beginverse\n    Tak jdu \\[E]dál a dál\\[G] a sál \\[D]střídá sál,\n    I re\\[Bm]member\\[Em]\\[D] when\n    na konci\\[G] \\[D]\n    compa-\\[A]ny\n\\endverse\n\\begininstrumental\n    | \\[C]\\[] | ^\\[] |\n\\endinstrumental\n\\endsong\n";
+        let (out, changes) = tidy(text);
+        assert!(out.contains("dál a dál \\[G] a sál"), "{out}");
+        assert!(out.contains("re\\[Bm]member \\[Em]\\[D] when"), "{out}");
+        // At the end of a line, inside a word, in an instrumental: as is.
+        assert!(out.contains("na konci\\[G] \\[D]\n"), "{out}");
+        assert!(out.contains("compa-\\[A]ny\n"), "{out}");
+        assert!(out.contains("| \\[C]\\[] | ^\\[] |"), "{out}");
+        assert_eq!(changes.len(), 2, "{changes:?}");
+        assert_eq!(tidy(&out).1.len(), 0);
     }
 
     #[test]

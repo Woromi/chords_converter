@@ -111,6 +111,10 @@ part of the identical-output check `\insertchorus` has.
          left alone by rule. A `\chordsoff` on a line of its own (Sea of
          Machines, Basket Case) was first read as a sung line; once it was
          not, 25 more songs gained reminders, all pixel-identical.
+   - [x] A chord glued to the end of a word before a space and more words
+         gets a space before it (`dál\[G] a` → `dál \[G] a`, the user: with
+         `\chordsoff` the line read otherwise). The printer already places
+         such a chord on the next word. 21 chords in 13 songbook songs.
    - [x] Idempotent: moves first, then choruses on the moved text; a second
          pass over every tidied songbook song changes nothing.
 5. [x] **Tier 3 `shrink` (until 0.6.0 `suggest`)/`apply`** (`src/tex/fit.rs`, `src/tex/measure.rs`):
@@ -169,6 +173,10 @@ part of the identical-output check `\insertchorus` has.
          `category: "restructure"`. Letter to Dana: three "key change"
          unnumbered verses → three choruses → `tidy`: a chorus and two
          `\insertchorus` → `shrink`: `\insertchorus*` for each.
+   - [x] Instrumentals (0.8.0, the user): a row played again in a row is
+         printed once with `\rep{n}` (`rep`, 85; 17 instrumentals in 15
+         songbook songs; rows of `^` left alone), and `join` joins
+         instrumental rows bar to bar, the meeting bar line once.
    - [x] Commands by purpose (0.6.0, decided with the user): `suggest`
          is `shrink` (the old name still works), and corrections moved to
          `check`, since fitting and correcting are different actions: an
@@ -179,6 +187,10 @@ part of the identical-output check `\insertchorus` has.
          when two parts differ in several lines: Hejno vran's chorus turns
          to "you" on purpose); mixed `'`/`’`; `~` in an English song. On the
          songbook: 5 songs with mixed apostrophes, 1 line to look at.
+   - [ ] Later, maybe (the user): a chord standing in a pause at the start
+         of a line, before the first word, moved onto the word, as one
+         proposal for the whole song. Not for pauses between words: too
+         much noise, and some are meant.
    - [ ] A missing `~` after a Czech one-letter word: left out, since the
          songbook ties only 249 of 1466 (lines rarely wrap). Ask the user.
    - [ ] Spelling against the Hunspell dictionary of the song's `lang`

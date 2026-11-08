@@ -25,7 +25,7 @@ cargo run -- <url|file.html|file.txt|-> [latex|text|debug]
 **The version in `Cargo.toml` is part of the interface.** ZubuvZpevnikUi
 runs this tool (as a git submodule, built next to the app) and checks
 `chords_converter --version` against a minimum. Raise the minor version
-(`0.7.0` → `0.8.0`) in the same commit as any change to the command line,
+(`0.8.0` → `0.9.0`) in the same commit as any change to the command line,
 the exit codes, the `Saving output to:` lines or the `shrink --json`
 format, and tell the UI (a note in its `docs/`).
 

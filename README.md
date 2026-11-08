@@ -46,6 +46,12 @@ it, so it is never left half written.
   them that way already. Indentation, comments (which may hold text lined
   up by hand) and the space of a control space `\ ` are kept. On the
   songbook: 152 lines in 49 songs, all typeset pixel for pixel the same.
+- **A chord between two words gets a space before it**: `dál\[G] a sál`
+  becomes `dál \[G] a sál`. Glued to the word before, the chord belongs to
+  neither word, and with `\chordsoff` the line reads otherwise. Chords at
+  the end of a line, inside a word, `^`, `\[]` slots and instrumentals stay
+  as they are. On the songbook: 21 chords in 13 songs. The printer never
+  writes it this way in the first place.
 - **Setup on lines of its own moves onto the opening line**:
   `\beginverse` followed by a line `\chordsoff` becomes
   `\beginverse\chordsoff`. Only the lines before the first sung one move,
@@ -130,6 +136,7 @@ Song.tex
   | Change | Score | Why |
   |---|---|---|
   | join lines in pairs | 90 | every word and chord stays where it is sung |
+  | an instrumental's row played again, once with `\rep{n}` | 85 | nothing looked up elsewhere, only counted |
   | `\insertchorus*` | 80 | one glance back to the chorus, and back |
   | `\chordsoff`, `\chordsoffonsmallpage` | 70 | words read here, chords somewhere else, line after line |
   | `\smalleronsmallpage` | 20 | the whole song harder to read |
@@ -158,6 +165,14 @@ Song.tex
   A4 or A5 (nor one already). That is a typesetting run per kind of part,
   seconds on a long song, so `shrink` leaves it out and `join` does it on
   request. Its output is `shrink`'s, and its ids work with `apply`.
+  Instrumentals join too, bar to bar: `| a | b |` and `| c | d |` become
+  `| a | b | c | d |`, the bar line where they meet written once; one
+  with a `\rep` row is left alone.
+- **Rows played again.** An instrumental's row written several times in a
+  row is printed once with `\rep{n}` (kind `rep`); a row that already ends
+  with `\rep{k}` counts k times. Rows of `^` are left alone: each `^`
+  replays the next chord remembered, so rows written alike play different
+  chords. On the songbook: 17 instrumentals in 15 songs.
 - **Chords stay spread out.** The first part of a kind keeps its chords, and
   a part that loses them must still have a chorded neighbour of its kind.
   This holds on each paper, for each proposal and for any chosen together.
