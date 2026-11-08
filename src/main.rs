@@ -547,12 +547,12 @@ fn list_proposals(
         }
     } else if listing == Listing::Check {
         // Corrections in the order of the song.
-        shown = all.iter().filter(|p| p.is_restructure()).collect();
+        shown = all.iter().filter(|p| p.is_correction()).collect();
         shown.sort_by_key(|p| p.line);
     } else {
         shown = all
             .iter()
-            .filter(|p| !p.needs_width_check() && !p.is_restructure() && stages.contains(&p.stage))
+            .filter(|p| !p.needs_width_check() && !p.is_correction() && stages.contains(&p.stage))
             .collect();
     }
 
@@ -569,7 +569,7 @@ fn list_proposals(
                     "gain_lines": p.gain_lines,
                     "score": p.score,
                     "grade": p.grade(),
-                    "category": if p.is_restructure() { "restructure" } else { "fit" },
+                    "category": p.category(),
                     "sources": p.sources.iter().map(|s| serde_json::json!({
                         "line": s.line,
                         "start": s.span.start,
@@ -762,7 +762,8 @@ every part of the kind can take it, after typesetting the joined song to
 check no line comes out too wide on A4 or A5 (slow: a run per kind).
 check lists corrections, whether the song fits or not: a part with the
 chorus's words typed as something else may be made a chorus (then tidy
-reprints its copies).
+reprints its copies); a line's copies differing in one word by a slip;
+apostrophes typed both ways; ~ in an English song.
 apply makes the chosen ones, from any of the three; apply one, then ask
 again.";
 

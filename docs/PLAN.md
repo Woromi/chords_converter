@@ -174,11 +174,15 @@ part of the identical-output check `\insertchorus` has.
          `check`, since fitting and correcting are different actions: an
          app that hides Make Smaller for a song that fits must still offer
          them. A chorus reminder needs the chorus's chords give or take one.
-   - [ ] `check`: typos. Copies of the same text differing by a letter or
-         an apostrophe; typography (mixed `'`/`’`, a missing `~` after a
-         Czech one-letter preposition, `~` in an English song); later,
-         spelling against the Hunspell dictionary of the song's `lang`,
-         listed, never fixed.
+   - [x] `check`: typos (0.7.0, `src/tex/fit/typos.rs`). Copies of a line
+         differing in one word by an apostrophe, diacritics or a letter (not
+         when two parts differ in several lines: Hejno vran's chorus turns
+         to "you" on purpose); mixed `'`/`’`; `~` in an English song. On the
+         songbook: 5 songs with mixed apostrophes, 1 line to look at.
+   - [ ] A missing `~` after a Czech one-letter word: left out, since the
+         songbook ties only 249 of 1466 (lines rarely wrap). Ask the user.
+   - [ ] Spelling against the Hunspell dictionary of the song's `lang`
+         (installed: `/usr/share/hunspell`), listed, never fixed.
    - [ ] Re-breaking lines at other points stays a human judgement;
          `shrink` names the too-wide lines.
 6. **Corpus checks (`printer-gap`).** Drafts move closer to the finished

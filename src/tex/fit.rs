@@ -23,6 +23,8 @@
 use super::{PartSpan, Scan, code_of, scan};
 use std::ops::Range;
 
+mod typos;
+
 /// The paper a change acts on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Stage {
@@ -98,10 +100,19 @@ const POOR: u8 = 35;
 const EARLY: u8 = 5;
 
 impl Proposal {
-    /// Whether it changes what the parts are, rather than only fitting the
-    /// page: a program marks these apart.
-    pub fn is_restructure(&self) -> bool {
-        self.kind == "restructure"
+    /// Whether it corrects the song rather than fitting a page: what
+    /// `check` lists, and `shrink` leaves out.
+    pub fn is_correction(&self) -> bool {
+        matches!(self.kind, "restructure" | "typo" | "apostrophes" | "tie")
+    }
+
+    /// What a program groups it under: `fit`, `restructure` or `typo`.
+    pub fn category(&self) -> &'static str {
+        match self.kind {
+            "restructure" => "restructure",
+            "typo" | "apostrophes" | "tie" => "typo",
+            _ => "fit",
+        }
     }
 
     /// Whether it joins lines, and so may be offered only once the joined
@@ -125,6 +136,9 @@ impl Proposal {
 
     /// The rating in words: what a person reads next to the score.
     pub fn grade(&self) -> &'static str {
+        if self.is_correction() {
+            return "correction";
+        }
         match self.score {
             75.. => "good",
             55.. => "fair",
@@ -299,12 +313,13 @@ pub fn proposals(text: &str) -> Vec<Proposal> {
     proposals.extend(chords_off(&names, &infos, Stage::AllPapers));
     proposals.extend(chorus_reminders(text, &scan, &infos, &names));
     proposals.extend(choruses_in_disguise(&infos, &names));
+    proposals.extend(typos::typos(&infos, &names, scan.lang.as_deref()));
     proposals.extend(chords_off(&names, &infos, Stage::SmallPaper));
     proposals.extend(smaller_type(text, &scan, &infos));
     proposals.extend(joined_lines(&names, &infos));
 
     // Restructuring is worth it even when it saves nothing.
-    proposals.retain(|p| p.gain_lines > 0 || p.is_restructure());
+    proposals.retain(|p| p.gain_lines > 0 || p.is_correction());
     let rank = |p: &Proposal| {
         (
             p.stage,
@@ -1027,7 +1042,7 @@ fn choruses_in_disguise(infos: &[PartInfo], names: &Names) -> Vec<Proposal> {
                 names.parts[i], names.parts[chorus]
             ),
             gain_lines: 0,
-            score: REMINDER,
+            score: 0,
             edits: vec![
                 Edit {
                     span: info.part.span.start..info.part.opening_rest.start,
@@ -1877,7 +1892,7 @@ mod tests {
         );
         let found: Vec<Proposal> = proposals(&text)
             .into_iter()
-            .filter(|p| p.is_restructure())
+            .filter(|p| p.kind == "restructure")
             .collect();
         // Each is a decision of its own.
         let ids: Vec<&str> = found.iter().map(|p| p.id.as_str()).collect();
@@ -1902,7 +1917,7 @@ mod tests {
 
         // Before any chorus: nothing to restructure.
         let text = song(&[part("\\beginverse*", &R), part("\\beginchorus", &R)].concat());
-        assert!(!proposals(&text).iter().any(|p| p.is_restructure()));
+        assert!(!proposals(&text).iter().any(|p| p.kind == "restructure"));
     }
 
     #[test]

@@ -205,6 +205,23 @@ cargo run -- check Song.tex
   kept. The rest is the other rules, a step at a time: `tidy` makes a
   chorus typed out again `\insertchorus`, and `shrink` then offers
   `\insertchorus*`. Its `category` in the JSON is `"restructure"`.
+- **Typos, the song checked against itself** (no dictionary): a line sung
+  more than once whose copies differ in one word, by an apostrophe,
+  diacritics or one letter in a word of four or more (`Ill` beside `I'll`).
+  The rarer form is offered the commoner one, and with as many of each, the
+  fuller: with the apostrophe, the diacritics, or the longer word. Two
+  parts that differ in more than one line differ on purpose (a chorus sung
+  to "you" the second time) and are left alone. A word with a chord inside
+  is named, but fixed by hand.
+- **Apostrophes typed both `'` and `’`**: all made the commoner kind (TeX
+  prints them alike; this keeps the source consistent).
+- **`~` after a word in an English song**: a space. Ties are for Czech and
+  Slovak; `\lrep~` and `~~~` for spacing stay.
+
+Corrections have no readability score: their `score` is 0 and their
+`grade` is `correction`, and their `category` is `restructure` or `typo`.
+On the songbook, `check` finds five songs with mixed apostrophes and one
+line to look at (Heart of Gold: "keep" beside "keeps").
 
 The tool exits with 1 when the song could not be read or written and with 2
 when the command line is wrong, so a caller need not read the messages to
