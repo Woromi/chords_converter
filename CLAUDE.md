@@ -231,9 +231,9 @@ What the LaTeX printer does not do yet, and so what the hand edit still has to
 (the diff between `out/latex/BillyJoel/SheSAlwaysAWoman.tex` and the song in the
 songbook shows all of it):
 
-- chord-only parts are set in bars, but without a rhythm: a row the source
-  drew without bar lines becomes one chord per bar with two slots, which is a
-  guess (Kluziste needs two chords to a bar);
+- chord-only parts keep the bars the source drew; a row drawn without bar
+  lines comes out as slots with no bars (`\[Em]\[G]\[C]\[D]`), and the bar
+  lines, which the page doesn't give, are the hand edit's;
 - lines are as short as the site split them, not joined into whole phrases;
 - repeated choruses are printed in full (`--tidy` makes an identical one
   `\insertchorus`), and repeated verses keep their chords. `\insertchorus*`

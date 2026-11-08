@@ -153,7 +153,10 @@ fn is_chords_only(part: &Part) -> bool {
 /// `| \[Am]\[] | \[F]\[C] |`.
 ///
 /// The source's own bar lines are kept where it drew them. A row drawn
-/// without any is one chord to the bar, since nothing says otherwise. A bar
+/// without any gets none: its chords are written as slots one after the
+/// other (`\[Em]\[G]\[C]\[D]`). How many of them make a bar is not on the
+/// page, and a guess would be wrong as often as right (Letter to Dana), so
+/// the bar lines are left to the hand edit. A bar
 /// has two slots, the songbook's common choice, or as many as it has chords;
 /// `\[]` is the slot nothing new is played in. A repeat count written on the
 /// row (`x2`, `2x`, `(3×)`) becomes `\rep{n}` behind it. The other marks a
@@ -212,6 +215,19 @@ fn instrumental_rows(part: &Part) -> Vec<String> {
             {
                 last.push_str(&format!(" \\rep{{{count}}}"));
             }
+            continue;
+        }
+
+        if !drawn_bars {
+            let mut row: String = bars
+                .iter()
+                .flatten()
+                .map(|name| format!("\\[{name}]"))
+                .collect();
+            if let Some(count) = repeat {
+                row.push_str(&format!(" \\rep{{{count}}}"));
+            }
+            rows.push(row);
             continue;
         }
 
@@ -837,14 +853,14 @@ mod tests {
     }
 
     #[test]
-    fn chords_without_bar_lines_are_a_bar_each() {
+    fn chords_without_bar_lines_get_no_bars_guessed() {
         let intro = part(
             PartType::Intro,
             vec![line("", &[(0, "G"), (6, "Gsus2"), (20, "G")])],
         );
         assert_eq!(
             body(vec![intro]),
-            "\\begininstrumental\n    | \\[G]\\[] | \\[Gsus2]\\[] | \\[G]\\[] |\n\\endinstrumental\n\n"
+            "\\begininstrumental\n    \\[G]\\[Gsus2]\\[G]\n\\endinstrumental\n\n"
         );
     }
 
@@ -875,7 +891,7 @@ mod tests {
         );
         assert_eq!(
             body(vec![outro]),
-            "\\begininstrumental\n    | \\[C]\\[] | \\[G]\\[] | \\rep{2}\n    | \\[Am]\\[] | \\rep{4}\n\\endinstrumental\n\n"
+            "\\begininstrumental\n    | \\[C]\\[] | \\[G]\\[] | \\rep{2}\n    \\[Am] \\rep{4}\n\\endinstrumental\n\n"
         );
     }
 

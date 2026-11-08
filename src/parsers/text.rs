@@ -403,6 +403,16 @@ pub(crate) fn english_note_name(note: &str) -> String {
     format!("{}{}", english, &note[root.len()..])
 }
 
+/// The root a chord starts with: the one that leaves a quality behind.
+/// "Asus2" starts with the Czech root As as well as with A, and is A.
+fn chord_root(s: &str) -> Option<&'static str> {
+    ROOTS
+        .iter()
+        .copied()
+        .find(|root| s.starts_with(root) && is_quality(&s[root.len()..]))
+        .or_else(|| match_root(s))
+}
+
 /// Returns the root that `s` starts with, if any.
 fn match_root(s: &str) -> Option<&'static str> {
     ROOTS.iter().copied().find(|r| s.starts_with(r))
@@ -803,41 +813,38 @@ fn is_no_chord_mark(token: &str) -> bool {
 
 /// A chord body is a known root followed only by chord-quality characters.
 fn is_chord_body(s: &str) -> bool {
-    match match_root(s) {
-        Some(root) => s[root.len()..].chars().all(is_quality_char),
-        None => false,
-    }
+    // "Asus2" starts with the Czech root As as well as with A; only one of
+    // them leaves a quality behind.
+    ROOTS
+        .iter()
+        .filter(|root| s.starts_with(*root))
+        .any(|root| is_quality(&s[root.len()..]))
 }
 
-/// Characters allowed in a chord quality (after the root), covering suffixes
-/// like `maj7`, `mi`, `sus4`, `add9`, `dim`, `aug`, `7b5`, `#9`.
-fn is_quality_char(c: char) -> bool {
-    c.is_ascii_digit()
-        || matches!(
-            c,
-            'a' | 'd'
-                | 'g'
-                | 'i'
-                | 'j'
-                | 'm'
-                | 'n'
-                | 'o'
-                | 's'
-                | 'u'
-                | 'M'
-                | '#'
-                | 'b'
-                | '+'
-                | '-'
-                | '('
-                | ')'
-                | '.'
-                | '*'
-                | '°'
-                | 'Δ'
-                | 'ø'
-                | '∅'
-        )
+/// The pieces a chord quality (what follows the root) is made of: `maj7`,
+/// `mi`, `sus4`, `add9`, `dim`, `aug`, `7b5`, `#9`, `m7(b5)`. Longer pieces
+/// first, so `min` is read before `mi` and `m`.
+const QUALITY_PIECES: [&str; 23] = [
+    "maj", "Maj", "min", "dim", "aug", "sus", "add", "mi", "m", "M", "o", "#", "b", "+", "-",
+    "(", ")", ".", "*", "°", "Δ", "ø", "∅",
+];
+
+/// Whether a quality is made of the known pieces and digits, and nothing
+/// else. Allowing any of their letters in any order took words for chords:
+/// "Dana" is D with the letters a, n and a, each found in `maj`, `aug` or
+/// `min`, but not a quality.
+fn is_quality(mut rest: &str) -> bool {
+    while !rest.is_empty() {
+        if rest.starts_with(|c: char| c.is_ascii_digit()) {
+            rest = rest.trim_start_matches(|c: char| c.is_ascii_digit());
+            continue;
+        }
+        match QUALITY_PIECES.iter().find(|piece| rest.starts_with(*piece)) {
+            Some(piece) => rest = &rest[piece.len()..],
+            None => return false,
+        }
+    }
+    true
 }
 
 /// Extracts chords and their character column from a chord line.
@@ -876,7 +883,7 @@ pub(super) fn parse_chord(s: &str) -> Chord {
         None => (s.trim(), None),
     };
 
-    let (root, modifier) = match match_root(main_part) {
+    let (root, modifier) = match chord_root(main_part) {
         Some(r) => {
             let rest = &main_part[r.len()..];
             let modifier = (!rest.is_empty()).then(|| rest.to_string());
@@ -1224,5 +1231,38 @@ mod tests {
 
         assert_eq!(song.parts[0].lines[0].lyrics, "ona mi zmizela");
         assert_eq!(spelled("Ami"), "Am");
+    }
+
+    #[test]
+    fn a_name_spelled_like_a_chord_root_is_still_a_word() {
+        // "Dana" starts with D, and every letter after it occurs in a quality
+        // somewhere; it is a word all the same.
+        let song = parse("D\nDana, Dana, Dana, Dana\n");
+        let line = &song.parts[0].lines[0];
+        assert_eq!(line.lyrics, "Dana, Dana, Dana, Dana");
+        assert_eq!(line.chords.len(), 1);
+        for word in ["Dana", "Ana", "Bad", "Damn", "Esa"] {
+            assert!(!is_chord_token(word), "{word}");
+        }
+    }
+
+    #[test]
+    fn a_sus_chord_on_a_or_e_is_not_a_czech_flat() {
+        for (written, root, quality) in [("Asus2", "A", "sus2"), ("Esus4", "E", "sus4"), ("As7", "As", "7"), ("Es", "Es", "")] {
+            let chord = parse_chord(written);
+            assert_eq!(chord.root, root, "{written}");
+            assert_eq!(chord.modifier.as_deref().unwrap_or(""), quality, "{written}");
+        }
+    }
+
+    #[test]
+    fn real_qualities_still_read_as_chords() {
+        for chord in [
+            "C", "Am", "Ami", "Amin", "Cmaj7", "CMaj7", "CM7", "Dsus4", "Dsus2", "Cadd9", "Bdim",
+            "Bdim7", "Caug", "C+", "C7b5", "C7#9", "Bm7b5", "Bm7(b5)", "Co7", "C°", "Cø", "CΔ7",
+            "Cmmaj7", "Cmadd9", "C6add9", "C13", "Fis", "Hmi7", "Es", "As7", "C5", "G/B", "Asus2/E",
+        ] {
+            assert!(is_chord_token(chord), "{chord}");
+        }
     }
 }
