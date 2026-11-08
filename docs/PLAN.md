@@ -102,6 +102,12 @@ part of the identical-output check `\insertchorus` has.
          where `lang` is set, so on drafts only to kytary songs for now.
          Recall: Samota's draft gap 41 → 24 lines, 21 Guns 100 → 87, Jolene
          37 → 32.
+   - [x] Hand-typed reminder chorus → `\insertchorus*` (runs first). Gate:
+         13 songbook songs compared, 10 pixel-identical once the songbook's
+         `refren.lua` stopped keeping a trailing chord's space before the dots
+         (fixed there, uncommitted). The 3 others (no dots: Hallelujah,
+         Yomara Nildar; `\iflargepaper` inside: Mississippi Blues) are now
+         left alone by rule.
    - [x] Idempotent: moves first, then choruses on the moved text; a second
          pass over every tidied songbook song changes nothing.
 5. [x] **Tier 3 `suggest`/`apply`** (`src/tex/fit.rs`, `src/tex/measure.rs`):
@@ -139,6 +145,19 @@ part of the identical-output check `\insertchorus` has.
    songs. `suggest` on *finished* songs proposes almost nothing, and every
    proposal there is a false positive to examine. (`tidy` on finished songs
    does find real work: import leftovers nobody fixed by hand.)
+
+## Waiting on ZubuvZpevnik
+
+- **A full chorus reprint with chords off**, e.g. `\insertchorus[\chordsoff]`.
+  A one-line chorus (Hallelujah, Yomara Nildar) has nothing to shorten, so
+  it is sung again in full without chords, and today that has to be typed
+  out by hand as a `\beginchorus\chordsoff` copy. Once the songbook has the
+  macro, add a tidy rule: a chorus identical in words and chords to the
+  latest one, with `\chordsoff`, becomes the chords-off reprint. Check it
+  pixel-identical like the other chorus rules. The spelling is the
+  songbook's to choose: `[...]` already takes the chorus number
+  (`\insertchorus[2]`), so the option needs a form that doesn't collide
+  with it, and ZubuvZpevnikWeb re-implements the macro too.
 
 ## Notes for the UI session
 - Exit codes changed: 1 when the song could not be read or written (it used to

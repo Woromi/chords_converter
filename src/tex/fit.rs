@@ -127,7 +127,7 @@ fn info<'a>(text: &str, part: &'a PartSpan) -> PartInfo<'a> {
 }
 
 /// Whether `code` holds the control word `\word` (and not one it starts).
-fn has_word(code: &str, word: &str) -> bool {
+pub(super) fn has_word(code: &str, word: &str) -> bool {
     let needle = format!("\\{word}");
     code.match_indices(&needle).any(|(at, _)| {
         !code[at + needle.len()..]
@@ -138,7 +138,7 @@ fn has_word(code: &str, word: &str) -> bool {
 }
 
 /// The names of the chords in a line, `\[]` slots and `\[\%]` aside.
-fn chord_names(code: &str) -> Vec<String> {
+pub(super) fn chord_names(code: &str) -> Vec<String> {
     let mut names = Vec::new();
     let mut rest = code;
     while let Some(at) = rest.find("\\[") {
@@ -154,7 +154,7 @@ fn chord_names(code: &str) -> Vec<String> {
 }
 
 /// A line's words, lowercased, with chords, macros and punctuation left out.
-fn lyric_words(code: &str) -> String {
+pub(super) fn lyric_words(code: &str) -> String {
     let mut out = String::new();
     let mut chars = code.chars().peekable();
     while let Some(c) = chars.next() {

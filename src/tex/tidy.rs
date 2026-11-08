@@ -13,6 +13,8 @@ pub struct Change {
     /// The 1-based line it is on.
     pub line: usize,
     pub description: String,
+    /// How many lines fewer the song has once it is made.
+    pub removed_lines: usize,
 }
 
 /// Tidies a song: every rule, every change applied.
@@ -23,6 +25,13 @@ pub struct Change {
 /// changes nothing. The changes are reported in the order they were made.
 /// A move stays on its line, so the line numbers hold for both rounds.
 pub fn tidy(text: &str) -> (String, Vec<Change>) {
+    // A reminder typed by hand is the first thing to go: the chord moves
+    // and the chorus comparison after it see the song as it will stay.
+    let mut reminders = hand_written_reminders(text, &scan(text));
+    reminders.sort_by_key(|c| c.span.start);
+    let reminded = apply(text, &reminders);
+    let text = reminded.as_str();
+
     let mut moves = chords_to_syllable_starts(text, &scan(text));
     moves.sort_by_key(|c| c.span.start);
     let moved = apply(text, &moves);
@@ -31,10 +40,36 @@ pub fn tidy(text: &str) -> (String, Vec<Change>) {
     choruses.sort_by_key(|c| c.span.start);
     let tidied = apply(&moved, &choruses);
 
-    let mut changes = moves;
-    changes.extend(choruses);
+    // Removing a reminder takes its lines out; the later changes are
+    // reported on the lines of the song as it was given.
+    let mut later = moves;
+    later.extend(choruses);
+    {
+        let original = text_before(&reminders);
+        for change in &mut later {
+            change.line = original(change.line);
+        }
+    }
+    let mut changes = reminders;
+    changes.extend(later);
     changes.sort_by_key(|c| c.line);
     (tidied, changes)
+}
+
+/// Maps a line of the song after `reminders` were applied back to the line
+/// it was on before.
+fn text_before(reminders: &[Change]) -> impl Fn(usize) -> usize + '_ {
+    move |line| {
+        let mut shift = 0;
+        for reminder in reminders {
+            let removed = reminder.removed_lines;
+            // Where the reminder's replacement now stands.
+            if reminder.line - shift < line {
+                shift += removed;
+            }
+        }
+        line + shift
+    }
 }
 
 /// Applies changes that don't overlap, in order.
@@ -92,6 +127,7 @@ fn repeated_choruses(text: &str, scan: &Scan) -> Vec<Change> {
                 "the chorus is the same as the one on line {}: \\insertchorus",
                 latest.line
             ),
+            removed_lines: text[repeat.span.clone()].matches('\n').count(),
         });
     }
     changes
@@ -123,6 +159,109 @@ fn uses_chord_memory(body: &str) -> bool {
     body.lines().map(code_of).any(|code| {
         code.contains('^') || code.contains("\\memorize") || code.contains("\\usechords")
     })
+}
+
+/// A chorus written out by hand as its own reminder (the first line, with
+/// its chords off and the rest commented out) becomes `\insertchorus*`,
+/// which prints exactly that: the first line of the latest chorus, chords
+/// off, with `...`. CLAUDE.md: a chorus that comes back is never retyped and
+/// never commented out.
+///
+/// Only when nothing printed changes:
+/// - the reminder has one line sung, ending in `...` (which the reminder
+///   adds; a line typed without it would gain it), and shows no chords;
+/// - nothing in it depends on the paper (`\iflargepaper`): the reminder
+///   macro has one line for all;
+/// - its words are the first line's of the chorus that is the latest at that
+///   point, which may be an earlier hand-written reminder, since every
+///   `\beginchorus` becomes the latest; one with words of its own stays;
+/// - it has the latest chorus's number;
+/// - no full `\insertchorus` reprints it before the next chorus: that would
+///   go back to the chorus before;
+/// - no chorus is conditional.
+fn hand_written_reminders(text: &str, scan: &Scan) -> Vec<Change> {
+    use super::fit::{chord_names, has_word, lyric_words};
+    let choruses: Vec<&PartSpan> = scan.parts.iter().filter(|p| p.kind == "chorus").collect();
+    if choruses.iter().any(|p| p.conditional) || scan.chorus_repeats.iter().any(|(_, c)| *c) {
+        return Vec::new();
+    }
+    let sung = |part: &PartSpan| -> Vec<String> {
+        text[part.body.clone()]
+            .lines()
+            .map(|l| code_of(l).trim().to_string())
+            .filter(|l| !l.is_empty())
+            .collect()
+    };
+
+    let mut changes = Vec::new();
+    let mut latest: Option<&PartSpan> = None;
+    for (k, &part) in choruses.iter().enumerate() {
+        let lines = sung(part);
+        let chords_off = has_word(code_of(&text[part.opening_rest.clone()]), "chordsoff");
+        let next_chorus = choruses.get(k + 1).map_or(text.len(), |p| p.span.start);
+        let reprinted = scan.chorus_repeats.iter().any(|(span, _)| {
+            span.start >= part.span.end
+                && span.start < next_chorus
+                && !text[span.clone()].starts_with("\\insertchorus*")
+        });
+        let matches_latest = latest.is_some_and(|latest| {
+            let first = sung(latest).into_iter().next().unwrap_or_default();
+            latest.number == part.number
+                && lines.len() == 1
+                && ends_in_dots(&lines[0])
+                && !lines[0].contains("\\if")
+                && (chords_off || chord_names(&lines[0]).is_empty())
+                && !lyric_words(&first).is_empty()
+                && lyric_words(&first) == lyric_words(&lines[0])
+                && !reprinted
+                && rest_is_empty(text, part)
+        });
+        if !matches_latest {
+            latest = Some(part);
+            continue;
+        }
+        let latest = latest.unwrap();
+        changes.push(Change {
+            span: part.span.clone(),
+            replacement: match part.number {
+                Some(n) => format!("\\insertchorus*[{n}]"),
+                None => "\\insertchorus*".to_string(),
+            },
+            line: part.line,
+            description: format!(
+                "the chorus is a reminder of the one on line {}, typed out: \\insertchorus*",
+                latest.line
+            ),
+            removed_lines: text[part.span.clone()].matches('\n').count(),
+        });
+    }
+    changes
+}
+
+/// Whether a line's words end in dots: the chords and the `\role` label
+/// after them aside.
+fn ends_in_dots(line: &str) -> bool {
+    let mut words = line;
+    if let Some(at) = words.find("\\role") {
+        words = &words[..at];
+    }
+    let mut words = words.trim_end();
+    while words.ends_with(']') {
+        match words.rfind("\\[") {
+            Some(at) => words = words[..at].trim_end(),
+            None => break,
+        }
+    }
+    words.ends_with("...") || words.ends_with('…')
+}
+
+/// Whether the opening line holds nothing but chord switches: anything else
+/// there would be lost with the part.
+fn rest_is_empty(text: &str, part: &PartSpan) -> bool {
+    let opening = code_of(&text[part.opening_rest.clone()])
+        .replace("\\chordsoffonsmallpage", "")
+        .replace("\\chordsoff", "");
+    opening.trim().is_empty()
 }
 
 /// A chord the source drew a letter or two inside its syllable moves to
@@ -163,6 +302,7 @@ fn chords_to_syllable_starts(text: &str, scan: &Scan) -> Vec<Change> {
                         "chord moved to the start of its syllable: {}",
                         replacement.trim()
                     ),
+                    removed_lines: 0,
                 });
             }
             line_start += raw.len();
@@ -568,5 +708,111 @@ mod tests {
             tidied_line("czech", "jak \\[G]p\\[C]í\\[D]ská"),
             "jak \\[G]p\\[C]í\\[D]ská"
         );
+    }
+
+    #[test]
+    fn a_reminder_typed_by_hand_becomes_insertchorus_star() {
+        let full = "    \\[G]Carry out your \\[Em]task, \\[C]spheres \\role{Bird}\n    \\[F]Live out our dreams\n";
+        let typed = "    \\[G]Carry out your \\[Em]task, \\[C]spheres... \\role{Bird}\n    %\\[F]Live out our dreams\n";
+        let text = song(&[
+            chorus("", full, ""),
+            VERSE.into(),
+            chorus("\\chordsoff", typed, ""),
+            VERSE.into(),
+            chorus("\\chordsoff", typed, " \\rep{2}"),
+        ]);
+        let (tidied, changes) = tidy(&text);
+        assert_eq!(changes.len(), 2, "{changes:?}");
+        assert_eq!(
+            tidied,
+            song(&[
+                chorus("", full, ""),
+                VERSE.into(),
+                "\\insertchorus*\n\n".into(),
+                VERSE.into(),
+                "\\insertchorus* \\rep{2}\n\n".into(),
+            ])
+        );
+        assert!(tidy(&tidied).1.is_empty());
+    }
+
+    #[test]
+    fn a_reminder_in_words_of_its_own_stays_and_is_the_latest() {
+        let full = "    Nechám \\[Dm]déšť, ať padá si dál\n    neuhasí \\[C]žár\n";
+        let own = "    \\[Dm]Déšť ať padá si dál...\n    %neuhasí \\[C]žár\n";
+        let first = "    Nechám \\[Dm]déšť ať padá si dál...\n    %neuhasí \\[C]žár\n";
+        // The second reminder repeats the first line of the full chorus, but
+        // the latest chorus by then is the first reminder: it stays too.
+        let text = song(&[
+            chorus("", full, ""),
+            chorus("\\chordsoff", own, ""),
+            chorus("\\chordsoff", first, ""),
+        ])
+        .replace("english", "czech");
+        let (_, changes) = tidy(&text);
+        assert!(
+            changes.iter().all(|c| !c.description.contains("reminder")),
+            "{changes:?}"
+        );
+    }
+
+    #[test]
+    fn a_reminder_with_chords_or_reprinted_in_full_stays() {
+        let full = "    \\[C]Fear of the \\[Dm]dark\n    \\[F]I have a phobia\n";
+        let chorded = "    \\[C]Fear of the \\[Dm]dark...\n    %\\[F]I have a phobia\n";
+        let text = song(&[chorus("", full, ""), chorus("", chorded, "")]);
+        assert!(tidy(&text).1.is_empty());
+
+        let typed = "    \\[C]Fear of the \\[Dm]dark...\n";
+        let text = song(&[
+            chorus("", full, ""),
+            chorus("\\chordsoff", typed, ""),
+            "\\insertchorus\n\n".into(),
+        ]);
+        assert!(
+            tidy(&text)
+                .1
+                .iter()
+                .all(|c| !c.description.contains("reminder"))
+        );
+    }
+
+    #[test]
+    fn lines_are_reported_as_the_song_was_given() {
+        let full = "    \\[G]Carry on \\[C]spheres\n    \\[F]Live out\n";
+        let typed = "    \\[G]Carry on \\[C]spheres...\n    %\\[F]Live out\n";
+        let text = song(&[
+            chorus("", full, ""),
+            chorus("\\chordsoff", typed, ""),
+            "\\beginverse\n    D\\[E]o\n\\endverse\n\n".into(),
+        ])
+        .replace("english", "czech");
+        let (_, changes) = tidy(&text);
+        let moved = changes
+            .iter()
+            .find(|c| c.description.contains("syllable"))
+            .unwrap();
+        let line = text.lines().position(|l| l.contains("D\\[E]o")).unwrap() + 1;
+        assert_eq!(moved.line, line);
+    }
+
+    #[test]
+    fn a_reminder_without_dots_or_depending_on_the_paper_stays() {
+        let full = "    \\[C]Hallelujah, \\[Am]hallelujah\n    \\[F]Hallelujah\n";
+        let no_dots = "    Hallelujah, hallelujah\n";
+        let text = song(&[chorus("", full, ""), chorus("\\chordsoff", no_dots, "")]);
+        assert!(tidy(&text).1.is_empty());
+
+        let paper = "    Hallelujah\\iflargepaper , hallelujah\\fi...\n";
+        let text = song(&[chorus("", full, ""), chorus("\\chordsoff", paper, "")]);
+        assert!(tidy(&text).1.is_empty());
+    }
+
+    #[test]
+    fn dots_count_before_trailing_chords_and_a_role() {
+        assert!(ends_in_dots("never cared for what they \\[C]do... \\[A]"));
+        assert!(ends_in_dots("spheres... \\role{Bird}{Ω}"));
+        assert!(ends_in_dots("Mornie utúlië…"));
+        assert!(!ends_in_dots("Hallelujah, hallelujah \\[C]"));
     }
 }

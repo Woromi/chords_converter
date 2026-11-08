@@ -48,6 +48,15 @@ it, so it is never left half written.
   reprints that chorus exactly: 43 songbook songs tidied this way typeset
   pixel for pixel the same, on A4 and A5. A song whose choruses sit inside
   `\iflargepaper … \fi`, or replay chords (`^`, `\memorize`), is left alone.
+- **A reminder typed out by hand becomes `\insertchorus*`**: a chorus of one
+  sung line, chords off, ending in `...`, the rest commented out, with the
+  words of the latest chorus's first line. That is what `\insertchorus*`
+  prints. A reminder in words of its own, without the dots, depending on
+  the paper (`\iflargepaper`), or showing chords stays as written. So does
+  one that a full `\insertchorus` after it reprints. On the songbook this
+  replaced 18 reminders in 10 songs, all typeset pixel for pixel the same
+  (with the songbook's `\insertchorus*` dropping a trailing chord before its
+  dots, as it now does).
 - **A chord drawn inside its syllable moves to the syllable's start**:
   `hl\[E7]ubokou` becomes `\[E7]hlubokou`, `D\[E]o` becomes `\[E]Do`.
   Sites draw a chord over the vowel and leave the consonants that open the
