@@ -455,6 +455,9 @@ fn suggest(
     let songbook = songbook.unwrap_or(&default_songbook);
     let mut measured: BTreeMap<String, tex::measure::Measured> = BTreeMap::new();
     let mut measure_on = |paper: &str| -> Result<tex::measure::Measured, String> {
+        if let Some(m) = measured.get(paper) {
+            return Ok(m.clone());
+        }
         let m = tex::measure::measure(songbook, &text, &[paper])?
             .remove(paper)
             .ok_or_else(|| format!("No measurement for {}", paper))?;
@@ -497,8 +500,54 @@ fn suggest(
     } else if fit.is_some() && measure {
         fits = Some(false);
     }
-    let shown: Vec<&tex::fit::Proposal> =
-        all.iter().filter(|p| stages.contains(&p.stage)).collect();
+    // Joined lines act on every paper but lose nothing there, so they are
+    // offered whichever stage is asked for, and only once the joined song
+    // was typeset: no line it lengthens may be too wide already, and none
+    // may come out too wide, on either paper.
+    if measure && !stages.is_empty() && all.iter().any(|p| p.needs_width_check()) {
+        for paper in ["a4", "a5"] {
+            measure_on(paper)?;
+        }
+    }
+    let mut shown: Vec<&tex::fit::Proposal> = Vec::new();
+    let mut unchecked_joins = false;
+    for p in &all {
+        if p.needs_width_check() {
+            if stages.is_empty() {
+                continue;
+            }
+            if !measure {
+                unchecked_joins = true;
+                continue;
+            }
+            let lengthens_a_wide_line = measured
+                .values()
+                .any(|m| m.wraps.iter().any(|w| p.lengthens(w.line, w.in_chorus)));
+            if lengthens_a_wide_line {
+                continue;
+            }
+            let joined = tex::fit::apply(&text, &[p])?;
+            let after = tex::measure::measure(songbook, &joined, &["a4", "a5"])?;
+            let fits = after.iter().all(|(paper, m)| {
+                let before = &measured[paper];
+                let count = |m: &tex::measure::Measured, chorus: bool| {
+                    m.wraps.iter().filter(|w| w.in_chorus == chorus).count()
+                };
+                m.pages <= before.pages
+                    && count(m, false) <= count(before, false)
+                    && count(m, true) <= count(before, true)
+            });
+            if fits {
+                shown.push(p);
+            }
+        } else if stages.contains(&p.stage) {
+            shown.push(p);
+        }
+    }
+    if unchecked_joins && note.is_empty() {
+        note =
+            "Joining lines in pairs is offered only with --measure, which checks they fit.".into();
+    }
 
     if json {
         let proposals: Vec<serde_json::Value> = shown
@@ -513,6 +562,11 @@ fn suggest(
                     "gain_lines": p.gain_lines,
                     "score": p.score,
                     "grade": p.grade(),
+                    "sources": p.sources.iter().map(|s| serde_json::json!({
+                        "line": s.line,
+                        "start": s.span.start,
+                        "end": s.span.end,
+                    })).collect::<Vec<_>>(),
                     "edits": p.edits.iter().map(|e| serde_json::json!({
                         "start": e.span.start,
                         "end": e.span.end,
@@ -673,10 +727,12 @@ to the draft.
 
 suggest lists changes to what a song prints, for a person to accept or
 reject, rated by how readable they leave the song (0-100: good, fair,
-poor, last resort) and most readable first: a chorus shortened to its
-reminder line, chords hidden where they repeat ones already shown (best
-alternating with chorded parts, and late in the song rather than early),
-a smaller type on small paper.
+poor, last resort) and most readable first: lines joined in pairs where
+every part of a kind can take it and they still fit (only with --measure,
+which typesets the joined song), a chorus shortened to its reminder line,
+chords hidden where they repeat ones shown just before (the nearer, the
+better, and late in the song rather than early), a smaller type on small
+paper.
 --fit a4|a5 keeps to the ones that help fit that paper; --measure typesets
 the song with the songbook's own scripts/checkpaper.py (the songbook is
 ../ZubuvZpevnik unless --songbook says otherwise) and says whether it fits.

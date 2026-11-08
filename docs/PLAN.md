@@ -144,12 +144,22 @@ part of the identical-output check `\insertchorus` has.
          edit did there (joined lines, transposition) is not a lever here.
    - [x] Rated for readability (0.3.0, decided with the user 2026-11-08):
          a score and a grade per proposal, listed by score within a stage.
-         A chorus reminder (80) reads better than chords off (60), which
-         reads better than a smaller type (20). Chords off loses 15 next to a
-         part already plain and up to 5 for being early, so taking the first
-         proposal each time alternates chorded and plain parts from the end
-         (Brhlík a sojka: verses 8, 6, 4, then the 3rd only as "poor").
-   - [ ] Re-breaking lines (CLAUDE.md lever 2) stays a human judgement;
+         A chorus reminder (80) reads better than chords off (70), which
+         reads better than a smaller type (20). Chords off loses 2 per
+         printed line between a plain part and the nearest part before it
+         showing the same chords (the user: "minimize the distance"); ties
+         go to the later part. Layouts are weighed whole, and a better one
+         reached only by showing chords again is offered as one move
+         (1 2 R 3- 4 R 5 → hide 2 and 4, show 3). `sources` names the
+         parts a proposal relies on (asked for by the UI session).
+   - [x] Lines joined in pairs (0.4.0, asked for by the user 2026-11-08):
+         every two lines of every part of a kind into one, offered only when
+         every part of the kind can take it (even number of lines; no
+         comment, switch, `\textnote`, `\if` or inner `\rep` in the way)
+         and, with `--measure`, the joined song typesets with no line too
+         wide on A4 or A5 and no more pages. Rated 90: every word and chord
+         stays. Offered in either stage, since it loses nothing on A4.
+   - [ ] Re-breaking lines at other points stays a human judgement;
          `suggest` names the too-wide lines.
 6. **Corpus checks (`printer-gap`).** Drafts move closer to the finished
    songs. `suggest` on *finished* songs proposes almost nothing, and every

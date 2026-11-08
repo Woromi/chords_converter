@@ -107,8 +107,9 @@ Song.tex
   A4: 1 page, fits
   A5: 2 pages, does not fit
   It fits A4: the changes for small paper only.
-  Proposals, most readable first:
-     60 fair        chordsoffonsmallpage@35      the verse repeats the chords of line 17: \chordsoffonsmallpage (~6 lines)
+  Proposals by paper, the most readable first (score 0-100):
+   for small paper only:
+     60 fair        chordsoffonsmallpage@35      verse 3 repeats the chords of verse 1: \chordsoffonsmallpage (~6 lines)
      20 last resort smalleronsmallpage@13        set the song a size smaller on small paper (8 pt): \smalleronsmallpage (~7 lines)
 ```
 
@@ -126,19 +127,34 @@ Song.tex
 
   | Change | Score | Why |
   |---|---|---|
+  | join lines in pairs | 90 | every word and chord stays where it is sung |
   | `\insertchorus*` | 80 | one glance back to the chorus, and back |
-  | `\chordsoff`, `\chordsoffonsmallpage` | 60 | words read here, chords somewhere else, line after line |
+  | `\chordsoff`, `\chordsoffonsmallpage` | 70 | words read here, chords somewhere else, line after line |
   | `\smalleronsmallpage` | 20 | the whole song harder to read |
 
-  Where the change goes counts too. A part that would lose its chords next
-  to a part of its kind already without them loses 15 for each such
-  neighbour: chorded and plain parts should alternate (on, off, on, off,
-  not on, on, off, off). And the earlier in the song, the more it loses
-  (up to 5, never enough to change the grade alone), so the chords and the words stay towards the beginning. Taking
-  the first proposal each time, four verses on one progression lose their
-  chords in the 4th, then the 2nd. The saving is an estimate in printed
+  Where chords go off counts too. A part without chords is read with the
+  chords of the nearest part before it that shows the same ones, so it
+  loses 2 for each printed line between them (a full `\insertchorus`
+  counting the whole chorus), on the paper where that is further, and for
+  any other part it sends further back. A verse right below the one it
+  repeats loses nothing. Of two as near, the later goes first, so chords
+  stay towards the beginning: `V R V R V R` loses the last verse's chords,
+  `V V R V V R V V R` the second verse of the last pair. Every layout with
+  one more part without chords is weighed as a whole, and when the best
+  one needs chords shown again somewhere, that is one proposal ("hide the
+  chords of verse 2 and verse 4 and show them again in verse 3"), so taking
+  the first proposal each time never leads into a corner. Small paper never
+  gets more chords back than it loses. The saving is an estimate in printed
   lines, a chord row counting as one; a change that saves none is not
   offered.
+- **Joining lines.** Every two lines of every part of a kind (all verses,
+  say) become one: fewer, longer lines, all of one musical length again. It
+  is offered only if every part of the kind can be joined alike (an even
+  number of lines, and no comment, chord switch, `\textnote`, `\if…` or
+  `\rep` before a part's last line in the way), and only with `--measure`:
+  the joined song is typeset, and no line may come out too wide on A4 or A5
+  (nor be one already). It changes A4 too, but loses nothing there, so it is
+  offered while fitting A5 as well.
 - **Chords stay spread out.** The first part of a kind keeps its chords, and
   a part that loses them must still have a chorded neighbour of its kind.
   This holds on each paper, for each proposal and for any chosen together.
@@ -151,8 +167,16 @@ Song.tex
   measured too, and nothing is written into the songbook. The songbook is
   `../ZubuvZpevnik` unless `--songbook DIR` says otherwise. Once a song fits,
   record it with `scripts/checkpaper.py --measure a5 --write <song>` there.
+- **Descriptions name the parts** as a person counts them: "verse 3" as the
+  page numbers it, "the 2nd chorus" (a reprint with `\insertchorus` counts
+  as sung again), "the 1st chorus R2" for a numbered one, and a part type a
+  song defines for itself by its macro ("the 2nd `\beginbridgeb` part").
+  The `line` field still gives the line in the file.
 - **`--json`** gives the same for a program, each proposal with its `score`,
-  its `grade` and its edits as UTF-8 byte offsets into the file.
+  its `grade`, its edits as UTF-8 byte offsets into the file, and `sources`:
+  the parts it relies on (where hidden chords are still shown, the chorus a
+  reminder stands for), each as its first line and its bytes from `\begin…`
+  to the end of `\end…`.
 - **`apply`** finds the proposals afresh in the file as it is, so an id from
   an older `suggest` that no longer applies is refused. Proposals that change
   the same text, or that together would leave a part without a chorded

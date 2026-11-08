@@ -25,7 +25,7 @@ cargo run -- <url|file.html|file.txt|-> [latex|text|debug]
 **The version in `Cargo.toml` is part of the interface.** ZubuvZpevnikUi
 runs this tool (as a git submodule, built next to the app) and checks
 `chords_converter --version` against a minimum. Raise the minor version
-(`0.3.0` → `0.4.0`) in the same commit as any change to the command line,
+(`0.4.0` → `0.5.0`) in the same commit as any change to the command line,
 the exit codes, the `Saving output to:` lines or the `suggest --json`
 format, and tell the UI (a note in its `docs/`).
 
@@ -235,11 +235,17 @@ voice: never split it into its own lyric line, even to make a song fit.
 
 ## Fitting the page (A5)
 
-Most songs need nothing. For one that overflows A5, use these levers in order:
+Most songs need nothing. For one that overflows A5, use these levers in order,
+the ones that keep the song most readable first:
 
-1. `\chordsoffonsmallpage` on parts that reprint chords already shown;
-2. re-breaking lines, but only if *every* comparable line can be re-broken the
-   same way;
+1. joining lines in pairs, every two lines of a part into one, but only if
+   *every* part of that kind can be joined the same way and the longer lines
+   still fit the A5 column (it keeps every word and chord where it is sung);
+2. `\insertchorus*` for a chorus sung again (a glance back to the chorus),
+   then `\chordsoffonsmallpage` on parts that reprint chords already shown
+   (chords read from elsewhere, line after line), on the parts nearest
+   below a part showing the same chords (the second of two verses in a row
+   rather than the first after a chorus), later parts first;
 3. `\smalleronsmallpage` (bare form only, 8 pt; anything smaller is too small
    to play from).
 

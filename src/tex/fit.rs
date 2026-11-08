@@ -14,10 +14,11 @@
 //! the words and all the chords where they are sung. A chorus shortened to
 //! its reminder line costs a glance back to the chorus. A part without its
 //! chords costs more: the words are read in one place and the chords in
-//! another, line after line. Where chords go off matters too: chorded and
-//! plain parts should alternate (on, off, on, off rather than on, on, off,
-//! off), and the chords stay towards the beginning. A smaller type costs the
-//! whole song, so it comes last.
+//! another, line after line. Where chords go off matters too: the nearer a
+//! part without chords is to the part before it whose chords it repeats,
+//! the better (the reader looks back that far), and of two as near, the
+//! chords stay towards the beginning. A smaller type costs the whole song,
+//! so it comes last.
 
 use super::{PartSpan, Scan, code_of, scan};
 use std::ops::Range;
@@ -38,6 +39,14 @@ pub struct Edit {
     pub replacement: String,
 }
 
+/// A part of the song, by its first line and its bytes from `\begin…` to
+/// the end of `\end…`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Source {
+    pub line: usize,
+    pub span: Range<usize>,
+}
+
 /// A change offered to the user.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Proposal {
@@ -53,24 +62,61 @@ pub struct Proposal {
     /// How readable the song stays, 0–100, higher is better.
     pub score: u8,
     pub edits: Vec<Edit>,
-    /// The part whose chords it switches off, and how, for checking that
-    /// the proposals chosen together still keep chords spread out.
-    effect: Option<(usize, Chords)>,
+    /// The parts it relies on: where the chords it hides are still shown,
+    /// or the chorus a reminder stands for.
+    pub sources: Vec<Source>,
+    /// The parts whose chord switch it changes, and to what, for checking
+    /// that the proposals chosen together still keep chords spread out.
+    effects: Vec<(usize, Chords)>,
+    /// For joined lines: the lines (1-based, inclusive) of the parts it
+    /// joins, and whether they are choruses. Joining is offered only once
+    /// the joined song is typeset and no line came out too wide, which
+    /// needs these to tell a line too wide already.
+    joins: Option<(Vec<(usize, usize)>, bool)>,
 }
 
 /// The readability a change leaves, before its place is taken into account.
+/// Lines joined in pairs keep every word and every chord in its place:
+/// nothing is looked up elsewhere.
+const JOINED: u8 = 90;
 const REMINDER: u8 = 80;
-const CHORDS_OFF: u8 = 60;
+const CHORDS_OFF: u8 = 70;
 const SMALLER_TYPE: u8 = 20;
-/// Taken off for each neighbour of the kind that is plain already: two
-/// plain parts side by side are what alternating avoids.
-const NEXT_TO_PLAIN: u8 = 15;
+/// Taken off for each line between a part without chords and the nearest
+/// part showing the same ones (decided with the user: what matters is how
+/// far the reader looks for the chords). A verse right after the one whose
+/// chords it repeats loses nothing; one after a four-line chorus, 8.
+const PER_LINE_AWAY: u8 = 2;
+/// A part's chords that cannot be found at all: worse than any distance.
+const FAR: usize = 1000;
+/// The lowest a change that keeps chords spread out goes: still "poor",
+/// never "last resort".
+const POOR: u8 = 35;
 /// Taken off, at most, for a change on the first part that can take it,
 /// less further on, so the words and chords stay towards the beginning.
 /// Small enough that the place never changes a grade on its own.
 const EARLY: u8 = 5;
 
 impl Proposal {
+    /// Whether it joins lines, and so may be offered only once the joined
+    /// song was typeset with no line too wide.
+    pub fn needs_width_check(&self) -> bool {
+        self.joins.is_some()
+    }
+
+    /// Whether a line the typesetter found too wide is one this proposal
+    /// would make longer still: a line of a part it joins (a chorus's
+    /// line is not known, only that it is in a chorus).
+    pub fn lengthens(&self, line: Option<usize>, in_chorus: bool) -> bool {
+        let Some((parts, choruses)) = &self.joins else {
+            return false;
+        };
+        match line {
+            Some(line) => parts.iter().any(|&(a, b)| (a..=b).contains(&line)),
+            None => in_chorus && *choruses,
+        }
+    }
+
     /// The rating in words: what a person reads next to the score.
     pub fn grade(&self) -> &'static str {
         match self.score {
@@ -243,20 +289,22 @@ pub fn proposals(text: &str) -> Vec<Proposal> {
     let infos: Vec<PartInfo> = scan.parts.iter().map(|p| info(text, p)).collect();
 
     let mut proposals = Vec::new();
-    proposals.extend(chords_off(text, &infos, Stage::AllPapers));
-    proposals.extend(chorus_reminders(text, &scan, &infos));
-    proposals.extend(chords_off(text, &infos, Stage::SmallPaper));
+    let names = Names::of(text, &scan);
+    proposals.extend(chords_off(&names, &infos, Stage::AllPapers));
+    proposals.extend(chorus_reminders(text, &scan, &infos, &names));
+    proposals.extend(chords_off(&names, &infos, Stage::SmallPaper));
     proposals.extend(smaller_type(text, &scan, &infos));
+    proposals.extend(joined_lines(&names, &infos));
 
     proposals.retain(|p| p.gain_lines > 0);
     let rank = |p: &Proposal| {
         (
             p.stage,
             std::cmp::Reverse(p.score),
-            std::cmp::Reverse(p.gain_lines),
-            // The later of two otherwise equal: chords and words stay
-            // towards the beginning.
+            // The later of two as readable: chords and words stay towards
+            // the beginning.
             std::cmp::Reverse(p.line),
+            std::cmp::Reverse(p.gain_lines),
         )
     };
     proposals.sort_by_key(rank);
@@ -270,101 +318,355 @@ fn switchable(info: &PartInfo) -> bool {
 
 /// The chords of a part that repeats an earlier part of its kind, chord for
 /// chord, can be hidden: on every paper (`\chordsoff`) or on small paper
-/// (`\chordsoffonsmallpage`). The earlier part has to show its chords on the
-/// paper in question, and the parts of the kind have to stay spread out: the
-/// first shows its chords, and every one without has a neighbour with.
-fn chords_off(text: &str, infos: &[PartInfo], stage: Stage) -> Vec<Proposal> {
-    let (word, kind) = match stage {
-        Stage::AllPapers => ("chordsoff", "chordsoff"),
-        Stage::SmallPaper => ("chordsoffonsmallpage", "chordsoffonsmallpage"),
+/// (`\chordsoffonsmallpage`). The earlier part has to show its chords, and
+/// the parts of the kind have to stay spread out: the first shows its
+/// chords, and every one without has a neighbour with.
+///
+/// A plain part reads its chords from the nearest part before it that
+/// shows the same ones, so a layout costs the lines between, summed over
+/// its plain parts (`layout_cost`, decided with the user). Choosing one
+/// change at a time can lead into a corner: in 1 2 R 3 4 R 5 with verse 3
+/// plain, hiding 2 sends verse 3 back past the chorus and verse 2. So every
+/// layout with one more plain part is weighed as a whole, and when the best
+/// one needs chords shown again somewhere, it is offered as one proposal
+/// that hides some and shows others (hide 2 and 4, show 3).
+fn chords_off(names: &Names, infos: &[PartInfo], stage: Stage) -> Vec<Proposal> {
+    let mut kinds: Vec<&str> = infos
+        .iter()
+        .filter(|i| switchable(i))
+        .map(|i| i.part.kind.as_str())
+        .collect();
+    kinds.sort();
+    kinds.dedup();
+    kinds
+        .into_iter()
+        .flat_map(|kind| chords_off_of_kind(names, infos, stage, kind))
+        .collect()
+}
+
+/// More parts of a kind than this are only offered one change at a time.
+const MAX_LAYOUT_PARTS: usize = 16;
+
+fn chords_off_of_kind(
+    names: &Names,
+    infos: &[PartInfo],
+    stage: Stage,
+    kind: &str,
+) -> Vec<Proposal> {
+    let text = names.text;
+    let (plain_state, word, id_kind) = match stage {
+        Stage::AllPapers => (Chords::Off, "chordsoff", "chordsoff"),
+        Stage::SmallPaper => (
+            Chords::OffOnSmallPage,
+            "chordsoffonsmallpage",
+            "chordsoffonsmallpage",
+        ),
     };
-    let mut proposals = Vec::new();
-    for (i, info) in infos.iter().enumerate() {
-        let Some(chords) = &info.chords else { continue };
-        if chords.is_empty() || !switchable(info) || info.switch.plain_on(stage) {
-            continue;
-        }
-        // The earlier part shows its chords on every paper.
-        let shown_before = infos[..i].iter().find(|earlier| {
-            earlier.part.kind == info.part.kind
-                && earlier.chords.as_ref() == Some(chords)
-                && earlier.switch == Chords::Shown
-        });
-        let Some(earlier) = shown_before else {
-            continue;
-        };
-        let target = match stage {
-            Stage::AllPapers => Chords::Off,
-            Stage::SmallPaper => Chords::OffOnSmallPage,
-        };
-        if !spread_out(infos, &[(i, target)]) {
-            continue;
-        }
+    let kin: Vec<usize> = (0..infos.len())
+        .filter(|&j| infos[j].part.kind == kind && switchable(&infos[j]))
+        .collect();
+    // The parts whose switch may change: chords to show or hide, and on
+    // small paper, not those hidden everywhere already.
+    let variable: Vec<usize> = kin
+        .iter()
+        .copied()
+        .filter(|&j| {
+            infos[j].chords.as_ref().is_some_and(|c| !c.is_empty())
+                && (stage == Stage::AllPapers || infos[j].switch != Chords::Off)
+        })
+        .collect();
+    // What a variable part shows when not plain: a part off on small paper
+    // only stays so on every paper; one off everywhere gets its chords back.
+    let unplain = |j: usize| match (stage, infos[j].switch) {
+        (Stage::AllPapers, Chords::OffOnSmallPage) => Chords::OffOnSmallPage,
+        _ => Chords::Shown,
+    };
+    let current: u32 = variable
+        .iter()
+        .enumerate()
+        .filter(|(_, j)| infos[**j].switch.plain_on(stage))
+        .fold(0, |m, (b, _)| m | 1 << b);
+    let size = current.count_ones() + 1;
+    if size as usize > variable.len() {
+        return Vec::new();
+    }
+    let masks: Vec<u32> = if variable.len() <= MAX_LAYOUT_PARTS {
+        (0..1u32 << variable.len())
+            .filter(|m| m.count_ones() == size)
+            .collect()
+    } else {
+        (0..variable.len())
+            .map(|b| current | 1 << b)
+            .filter(|m| m.count_ones() == size)
+            .collect()
+    };
 
-        // Its place among the parts of its kind, and the plain ones beside
-        // it on small paper: a change for every paper acts there too, so a
-        // neighbour plain only on A5 is plain beside it all the same.
-        let kin: Vec<usize> = (0..infos.len())
-            .filter(|&j| infos[j].part.kind == info.part.kind && switchable(&infos[j]))
-            .collect();
-        let k = kin.iter().position(|&j| j == i).unwrap();
-        let plain = |j: usize| {
-            infos[j].chords.as_ref().is_some_and(|c| c.is_empty())
-                || infos[j].switch.plain_on(Stage::SmallPaper)
-        };
-        let plain_beside = [k.checked_sub(1), Some(k + 1)]
+    let state_in = |mask: u32, j: usize| match variable.iter().position(|&v| v == j) {
+        Some(b) if mask & 1 << b != 0 => plain_state,
+        Some(_) => unplain(j),
+        None => infos[j].switch,
+    };
+    let has_chords = |j: usize| infos[j].chords.as_ref().is_some_and(|c| !c.is_empty());
+    // The chord rows small paper hides: a layout may not hide fewer, or
+    // fitting the page would make small paper longer.
+    let hidden_small = |mask: u32| -> usize {
+        kin.iter()
+            .filter(|&&j| state_in(mask, j).plain_on(Stage::SmallPaper))
+            .map(|&j| infos[j].chorded_rows)
+            .sum()
+    };
+
+    // How far apart two parts are: the lines printed between them.
+    let lines_before = &names.rows_before;
+    let end_line = |j: usize| text[..infos[j].part.span.end].matches('\n').count() + 1;
+    let gap = |first: usize, second: usize| {
+        let from = end_line(first).min(lines_before.len() - 1);
+        let to = (infos[second].part.line - 1).min(lines_before.len() - 1);
+        lines_before[to].saturating_sub(lines_before[from])
+    };
+    // Where a plain part's chords are read on a paper: the nearest part of
+    // the kind before it with the same chords that shows them there. The
+    // reader looks back to chords already played, not ahead.
+    let nearest = |mask: u32, j: usize, paper: Stage| {
+        kin.iter()
+            .copied()
+            .filter(|&q| {
+                q < j && infos[q].chords == infos[j].chords && !state_in(mask, q).plain_on(paper)
+            })
+            .min_by_key(|&q| gap(q, j))
+    };
+    // A layout's cost on each paper: for each part plain there, how far its
+    // chords are (decided with the user: the reader looks them up, so the
+    // nearer the better).
+    let layout_cost = |mask: u32| -> [usize; 2] {
+        let mut cost = [0; 2];
+        for (p, paper) in [Stage::AllPapers, Stage::SmallPaper]
             .into_iter()
-            .flatten()
-            .filter_map(|n| kin.get(n))
-            .filter(|&&j| plain(j))
-            .count() as u8;
-        let score = CHORDS_OFF - NEXT_TO_PLAIN * plain_beside - early(k, kin.len());
-
-        // A part already off on small paper switches to off everywhere by
-        // trading the one word for the other.
-        let opening = &info.part.opening_rest;
-        let edit = match (stage, info.switch) {
-            (Stage::AllPapers, Chords::OffOnSmallPage) => {
-                let at = opening.start
-                    + text[opening.clone()]
-                        .find("\\chordsoffonsmallpage")
-                        .unwrap();
-                Edit {
-                    span: at..at + "\\chordsoffonsmallpage".len(),
-                    replacement: "\\chordsoff".to_string(),
+            .enumerate()
+        {
+            for &j in &kin {
+                if has_chords(j) && state_in(mask, j).plain_on(paper) {
+                    cost[p] += nearest(mask, j, paper).map_or(FAR, |q| gap(q, j));
                 }
             }
-            _ => Edit {
-                span: opening.start..opening.start,
-                replacement: format!("\\{word}"),
-            },
-        };
-        proposals.push(Proposal {
-            id: format!("{kind}@{}", info.part.line),
-            kind,
-            stage,
-            line: info.part.line,
-            description: format!(
-                "the {} repeats the chords of line {}: \\{}{}",
-                part_name(&info.part.kind),
-                earlier.part.line,
-                word,
-                if plain_beside > 0 {
-                    format!(
-                        " (next to a {} already without chords)",
-                        part_name(&info.part.kind)
-                    )
-                } else {
-                    String::new()
-                }
-            ),
-            gain_lines: info.chorded_rows,
-            score,
-            edits: vec![edit],
-            effect: Some((i, target)),
+        }
+        cost
+    };
+    // A newly plain part repeats chords shown before it.
+    let source_before = |mask: u32, j: usize| {
+        (0..j).any(|q| {
+            infos[q].part.kind == kind
+                && infos[q].chords == infos[j].chords
+                && state_in(mask, q) == Chords::Shown
+        })
+    };
+
+    struct Layout {
+        mask: u32,
+        /// On A4 and on A5.
+        cost: [usize; 2],
+        /// Where the plain parts are, summed: of two layouts as good, the
+        /// one with its chords nearer the beginning.
+        later: usize,
+        /// Per part it changes: the part and its new switch.
+        changes: Vec<(usize, Chords)>,
+    }
+    let small_before = hidden_small(current);
+    let mut layouts = Vec::new();
+    'mask: for mask in masks {
+        let mut changes = Vec::new();
+        for &j in &variable {
+            let state = state_in(mask, j);
+            if state == infos[j].switch {
+                continue;
+            }
+            if state.plain_on(stage) && !source_before(mask, j) {
+                continue 'mask;
+            }
+            changes.push((j, state));
+        }
+        if hidden_small(mask) < small_before || !spread_out(infos, &changes) {
+            continue;
+        }
+        let later = kin
+            .iter()
+            .enumerate()
+            .filter(|(_, j)| state_in(mask, **j).plain_on(stage))
+            .map(|(k, _)| k)
+            .sum();
+        layouts.push(Layout {
+            mask,
+            cost: layout_cost(mask),
+            later,
+            changes,
         });
     }
+    let current_cost = layout_cost(current);
+
+    let proposal = |layout: &Layout| -> Proposal {
+        let hidden: Vec<usize> = layout
+            .changes
+            .iter()
+            .filter(|c| c.1.plain_on(stage))
+            .map(|c| c.0)
+            .collect();
+        let shown: Vec<(usize, Chords)> = layout
+            .changes
+            .iter()
+            .copied()
+            .filter(|c| !c.1.plain_on(stage))
+            .collect();
+        let line = |j: usize| infos[j].part.line;
+        let mut id = format!(
+            "{id_kind}@{}",
+            hidden
+                .iter()
+                .map(|&j| line(j).to_string())
+                .collect::<Vec<_>>()
+                .join("+")
+        );
+        for (j, _) in &shown {
+            id.push_str(&format!("-{}", line(*j)));
+        }
+        // How much further the reader looks for chords, on the paper where
+        // it is further; and of two as near, the later is better.
+        let further = (0..2)
+            .map(|p| layout.cost[p].saturating_sub(current_cost[p]))
+            .max()
+            .unwrap();
+        let score = (CHORDS_OFF as usize)
+            .saturating_sub(PER_LINE_AWAY as usize * further)
+            .max(POOR as usize) as u8;
+        let gain = hidden
+            .iter()
+            .map(|&j| infos[j].chorded_rows)
+            .sum::<usize>()
+            .saturating_sub(
+                shown
+                    .iter()
+                    .map(|(j, _)| infos[*j].chorded_rows)
+                    .sum::<usize>(),
+            );
+        let edits = layout
+            .changes
+            .iter()
+            .map(|&(j, to)| switch_edit(text, infos[j].part, infos[j].switch, to))
+            .collect();
+        let mut sources: Vec<usize> = hidden
+            .iter()
+            .filter_map(|&j| nearest(layout.mask, j, stage))
+            .collect();
+        sources.sort();
+        sources.dedup();
+        let description = if shown.is_empty() {
+            let j = hidden[0];
+            let q = nearest(layout.mask, j, stage).unwrap();
+            let away = match gap(q, j) {
+                0 => String::new(),
+                1 => " (1 line away)".to_string(),
+                n => format!(" ({n} lines away)"),
+            };
+            format!(
+                "{} repeats the chords of {}{away}: \\{word}",
+                names.parts[j], names.parts[q],
+            )
+        } else {
+            let list = |js: &[usize]| {
+                let names: Vec<&str> = js.iter().map(|&j| names.parts[j].as_str()).collect();
+                match names.split_last() {
+                    Some((last, [])) => last.to_string(),
+                    Some((last, rest)) => format!("{} and {last}", rest.join(", ")),
+                    None => String::new(),
+                }
+            };
+            let paper = if stage == Stage::AllPapers
+                && shown.iter().all(|c| c.1 == Chords::OffOnSmallPage)
+            {
+                " on large paper"
+            } else {
+                ""
+            };
+            let shown: Vec<usize> = shown.iter().map(|c| c.0).collect();
+            format!(
+                "hide the chords of {} and show them again in {}{paper}, so the {}s without chords are nearer to theirs: \\{word}",
+                list(&hidden),
+                list(&shown),
+                part_name(kind)
+            )
+        };
+        Proposal {
+            id,
+            kind: id_kind,
+            stage,
+            line: line(hidden[0]),
+            description,
+            gain_lines: gain,
+            score,
+            edits,
+            effects: layout.changes.clone(),
+            sources: sources.iter().map(|&q| source_of(infos[q].part)).collect(),
+            joins: None,
+        }
+    };
+
+    // Every single change, and the best layout overall when it needs chords
+    // shown again and reads better than any single change.
+    let singles: Vec<&Layout> = layouts
+        .iter()
+        .filter(|l| l.mask & current == current)
+        .collect();
+    let mut proposals: Vec<Proposal> = singles.iter().map(|l| proposal(l)).collect();
+    let total = |l: &Layout| l.cost[0] + l.cost[1];
+    let best_single = singles.iter().map(|l| total(l)).min();
+    let best = layouts
+        .iter()
+        .filter(|l| l.mask & current != current)
+        .min_by_key(|l| (total(l), std::cmp::Reverse(l.later)));
+    if let Some(best) = best
+        && best_single.is_none_or(|c| total(best) < c)
+    {
+        proposals.push(proposal(best));
+    }
     proposals
+}
+
+/// The edit that turns a part's chord switch from one state to another.
+fn switch_edit(text: &str, part: &PartSpan, from: Chords, to: Chords) -> Edit {
+    let opening = &part.opening_rest;
+    let word = |c: Chords| match c {
+        Chords::Off => "\\chordsoff",
+        Chords::OffOnSmallPage => "\\chordsoffonsmallpage",
+        Chords::Shown => "",
+    };
+    let span = match from {
+        Chords::Shown => opening.start..opening.start,
+        _ => {
+            let w = word(from);
+            let at = text[opening.clone()]
+                .match_indices(w)
+                .map(|(at, _)| opening.start + at)
+                .find(|&at| {
+                    !text[at + w.len()..]
+                        .chars()
+                        .next()
+                        .is_some_and(|c| c.is_ascii_alphabetic())
+                })
+                .expect("the switch the part was read with");
+            at..at + w.len()
+        }
+    };
+    Edit {
+        span,
+        replacement: word(to).to_string(),
+    }
+}
+
+/// A part a proposal relies on, for a program to point at.
+fn source_of(part: &PartSpan) -> Source {
+    Source {
+        line: part.line,
+        span: part.span.clone(),
+    }
 }
 
 /// Whether, with the given parts switched, every kind of part still has its
@@ -432,7 +734,7 @@ fn violations(plain: &[bool]) -> usize {
 /// the one-line reminder `\insertchorus*` (its chords may differ: the
 /// reminder prints none). So does a full `\insertchorus`. A chorus that comes
 /// back with new words keeps them.
-fn chorus_reminders(text: &str, scan: &Scan, infos: &[PartInfo]) -> Vec<Proposal> {
+fn chorus_reminders(text: &str, scan: &Scan, infos: &[PartInfo], names: &Names) -> Vec<Proposal> {
     let choruses: Vec<usize> = (0..infos.len())
         .filter(|&i| infos[i].part.kind == "chorus")
         .collect();
@@ -498,8 +800,8 @@ fn chorus_reminders(text: &str, scan: &Scan, infos: &[PartInfo]) -> Vec<Proposal
             stage: Stage::AllPapers,
             line: repeat.part.line,
             description: format!(
-                "the chorus has the words of line {}: shorten it to \\insertchorus*",
-                latest.part.line
+                "{} has the words of {}: shorten it to \\insertchorus*",
+                names.parts[pair[1]], names.parts[pair[0]]
             ),
             gain_lines: (repeat.lyric_rows + shown_rows).saturating_sub(1),
             score: score_at(repeat.part.line),
@@ -507,42 +809,164 @@ fn chorus_reminders(text: &str, scan: &Scan, infos: &[PartInfo]) -> Vec<Proposal
                 span: repeat.part.span.clone(),
                 replacement: star,
             }],
-            effect: None,
+            effects: Vec::new(),
+            sources: vec![source_of(latest.part)],
+            joins: None,
         });
     }
 
     // A full reprint becomes the reminder of what it reprints.
-    let latest_rows = |at: usize| {
+    let latest_before = |at: usize| {
         choruses
             .iter()
             .rev()
             .map(|&i| &infos[i])
             .find(|info| info.part.span.end <= at)
-            .map(|info| info.lyric_rows + info.chorded_rows)
     };
-    for (span, _) in &scan.chorus_repeats {
+    for (r, (span, _)) in scan.chorus_repeats.iter().enumerate() {
         let written = &text[span.clone()];
         if written.starts_with("\\insertchorus*") {
             continue;
         }
-        let Some(rows) = latest_rows(span.start) else {
+        let Some(latest) = latest_before(span.start) else {
             continue;
         };
+        let rows = latest.lyric_rows + latest.chorded_rows;
         let line = text[..span.start].matches('\n').count() + 1;
         proposals.push(Proposal {
             id: format!("insertchorus*@{line}"),
             kind: "insertchorus*",
             stage: Stage::AllPapers,
             line,
-            description: "the chorus is reprinted in full: shorten it to \\insertchorus*"
-                .to_string(),
+            description: format!(
+                "{} is reprinted in full: shorten it to \\insertchorus*",
+                names.repeats[r]
+            ),
             gain_lines: rows.saturating_sub(1),
             score: score_at(line),
             edits: vec![Edit {
                 span: span.start..span.start + "\\insertchorus".len(),
                 replacement: "\\insertchorus*".to_string(),
             }],
-            effect: None,
+            effects: Vec::new(),
+            sources: vec![source_of(latest.part)],
+            joins: None,
+        });
+    }
+    proposals
+}
+
+/// Every two lines of every part of a kind joined into one (CLAUDE.md
+/// "Fitting the page", lever 2): fewer, longer lines, all of the same
+/// musical length again, and every word and chord kept. Only when it can be
+/// done to every part of the kind alike: each has an even number of sung
+/// lines and nothing between them that a join would change the meaning of.
+/// Whether the joined lines fit the column is for the typesetter to say, so
+/// `suggest` offers it only after measuring (`needs_width_check`).
+fn joined_lines(names: &Names, infos: &[PartInfo]) -> Vec<Proposal> {
+    let text = names.text;
+    let mut kinds: Vec<&str> = infos
+        .iter()
+        .map(|i| i.part.kind.as_str())
+        .filter(|k| !k.starts_with("instrumental"))
+        .collect();
+    kinds.sort();
+    kinds.dedup();
+
+    let mut proposals = Vec::new();
+    'kind: for kind in kinds {
+        let parts: Vec<&PartInfo> = infos.iter().filter(|i| i.part.kind == kind).collect();
+        let mut edits = Vec::new();
+        let mut gain = 0;
+        let mut pairs = 0;
+        let mut spans = Vec::new();
+        for info in &parts {
+            if info.part.conditional {
+                continue 'kind;
+            }
+            let body = info.part.body.clone();
+            // The sung lines: byte range of the line, without its newline.
+            let mut sung: Vec<Range<usize>> = Vec::new();
+            let mut at = body.start;
+            for line in text[body.clone()].split_inclusive('\n') {
+                let range = at..at + line.trim_end_matches(['\n', '\r']).len();
+                at += line.len();
+                if text[range.clone()].trim().is_empty() {
+                    // Before the first line and after the last, the
+                    // layout's own; between lines, a gap that means one.
+                    if sung.is_empty() {
+                        continue;
+                    }
+                    if text[at..body.end].trim().is_empty() {
+                        break;
+                    }
+                    continue 'kind;
+                }
+                sung.push(range);
+            }
+            if sung.is_empty() || !sung.len().is_multiple_of(2) {
+                continue 'kind;
+            }
+            for (k, line) in sung.iter().enumerate() {
+                let raw = &text[line.clone()];
+                let code = code_of(raw);
+                let first_of_pair = k % 2 == 0;
+                let last = k + 1 == sung.len();
+                if code.trim().is_empty()
+                    // Joined, the next line would end up in the comment.
+                    || (first_of_pair && code.len() != raw.len())
+                    || ["textnote", "chordson", "chordsoff", "chordsoffonsmallpage"]
+                        .iter()
+                        .any(|w| has_word(code, w))
+                    || code.contains("\\if")
+                    || code.contains("\\else")
+                    || code.contains("\\fi")
+                    // A line repeated would become two.
+                    || (!last && has_word(code, "rep"))
+                {
+                    continue 'kind;
+                }
+            }
+            for pair in sung.chunks(2) {
+                let end = pair[0].start + text[pair[0].clone()].trim_end().len();
+                let next = &text[pair[1].clone()];
+                let start = pair[1].start + (next.len() - next.trim_start().len());
+                edits.push(Edit {
+                    span: end..start,
+                    replacement: " ".to_string(),
+                });
+                let chorded = |r: &Range<usize>| !chord_names(code_of(&text[r.clone()])).is_empty();
+                gain += 1;
+                if info.switch == Chords::Shown && chorded(&pair[0]) && chorded(&pair[1]) {
+                    gain += 1;
+                }
+                pairs += 1;
+            }
+            let first = text[..info.part.span.start].matches('\n').count() + 1;
+            let last = text[..info.part.span.end].matches('\n').count() + 1;
+            spans.push((first, last));
+        }
+        let Some(first) = parts.first() else { continue };
+        let name = if kind == "verse*" {
+            "unnumbered verse".to_string()
+        } else {
+            part_name(kind)
+        };
+        proposals.push(Proposal {
+            id: format!("joinlines@{}", first.part.line),
+            kind: "joinlines",
+            stage: Stage::AllPapers,
+            line: first.part.line,
+            description: format!(
+                "join every two lines of each {name} into one ({} lines into {pairs})",
+                pairs * 2
+            ),
+            gain_lines: gain,
+            score: JOINED,
+            edits,
+            effects: Vec::new(),
+            sources: Vec::new(),
+            joins: Some((spans, kind == "chorus")),
         });
     }
     proposals
@@ -590,18 +1014,153 @@ fn smaller_type(text: &str, scan: &Scan, infos: &[PartInfo]) -> Vec<Proposal> {
             span: line_start..line_start,
             replacement: "\\smalleronsmallpage\n\n".to_string(),
         }],
-        effect: None,
+        effects: Vec::new(),
+        sources: Vec::new(),
+        joins: None,
     }]
 }
 
-fn part_name(kind: &str) -> &str {
-    match kind.trim_end_matches('*') {
-        "chorus" => "chorus",
-        "prechorus" => "pre-chorus",
-        "bridge" => "bridge",
-        "intro" => "intro",
-        "outro" => "outro",
-        _ => "verse",
+/// What a person calls each part, for the descriptions: "verse 3", as the
+/// page prints it, and "the 2nd chorus" for the parts printed without a
+/// number. A chorus reprinted with `\insertchorus` counts as sung again.
+struct Names<'a> {
+    text: &'a str,
+    /// One per part of the scan.
+    parts: Vec<String>,
+    /// One per `\insertchorus…` of the scan.
+    repeats: Vec<String>,
+    /// Per line of the song, the lines printed before it: a sung line is
+    /// one, and a full `\insertchorus` the whole chorus it reprints.
+    rows_before: Vec<usize>,
+}
+
+impl<'a> Names<'a> {
+    fn of(text: &'a str, scan: &Scan) -> Self {
+        // Every part and reprint in the order of the song.
+        enum At<'p> {
+            Part(usize, &'p PartSpan),
+            Repeat(usize, Option<u32>),
+        }
+        let mut all: Vec<(usize, At)> = scan
+            .parts
+            .iter()
+            .enumerate()
+            .map(|(i, p)| (p.span.start, At::Part(i, p)))
+            .collect();
+        for (r, (span, _)) in scan.chorus_repeats.iter().enumerate() {
+            all.push((
+                span.start,
+                At::Repeat(r, repeat_number(&text[span.clone()])),
+            ));
+        }
+        all.sort_by_key(|(at, _)| *at);
+
+        let mut parts = vec![String::new(); scan.parts.len()];
+        let mut repeats = vec![String::new(); scan.chorus_repeats.len()];
+        let mut seen: Vec<(String, Option<u32>)> = Vec::new();
+        let mut verses = 0;
+        let mut latest_chorus = None;
+        let mut count = |key: (String, Option<u32>)| {
+            seen.push(key.clone());
+            seen.iter().filter(|k| **k == key).count()
+        };
+        let chorus = |n: usize, number: Option<u32>| match number {
+            Some(number) => format!("the {} chorus R{number}", ordinal(n)),
+            None => format!("the {} chorus", ordinal(n)),
+        };
+        for (_, at) in all {
+            match at {
+                At::Part(i, p) if p.kind == "verse" => {
+                    verses += 1;
+                    parts[i] = format!("verse {verses}");
+                }
+                At::Part(i, p) if p.kind == "chorus" => {
+                    latest_chorus = Some(p.number);
+                    parts[i] = chorus(count(("chorus".into(), p.number)), p.number);
+                }
+                At::Part(i, p) => {
+                    let name = if p.kind == "verse*" {
+                        "unnumbered verse".to_string()
+                    } else {
+                        part_name(&p.kind)
+                    };
+                    let n = count((name.clone(), None));
+                    parts[i] = format!("the {} {name}", ordinal(n));
+                }
+                At::Repeat(r, number) => {
+                    // `[]` or none: the latest chorus, whichever it was.
+                    let number = number.or(latest_chorus.flatten());
+                    repeats[r] = chorus(count(("chorus".into(), number)), number);
+                }
+            }
+        }
+        // A full reprint prints the latest chorus before it.
+        let mut reprint_rows = std::collections::HashMap::new();
+        for (span, _) in &scan.chorus_repeats {
+            if text[span.clone()].starts_with("\\insertchorus*") {
+                continue;
+            }
+            let latest = scan
+                .parts
+                .iter()
+                .rev()
+                .find(|p| p.kind == "chorus" && p.span.end <= span.start);
+            if let Some(chorus) = latest {
+                let rows = text[chorus.body.clone()]
+                    .lines()
+                    .filter(|l| !code_of(l).trim().is_empty())
+                    .count();
+                reprint_rows.insert(text[..span.start].matches('\n').count() + 1, rows);
+            }
+        }
+        let mut rows_before = vec![0usize];
+        for (n, line) in text.lines().enumerate() {
+            let code = code_of(line).trim();
+            let rows = match reprint_rows.get(&(n + 1)) {
+                Some(&rows) => rows,
+                // A part's opening and closing lines print nothing.
+                None => usize::from(
+                    !code.is_empty() && !code.starts_with("\\begin") && !code.starts_with("\\end"),
+                ),
+            };
+            rows_before.push(rows_before.last().unwrap() + rows);
+        }
+        Names {
+            text,
+            parts,
+            repeats,
+            rows_before,
+        }
+    }
+}
+
+/// The `n` of `\insertchorus[n]` or `\insertchorus*[n]`, if given.
+fn repeat_number(written: &str) -> Option<u32> {
+    let rest = written.strip_prefix("\\insertchorus")?;
+    let rest = rest.strip_prefix('*').unwrap_or(rest).strip_prefix('[')?;
+    rest[..rest.find(']')?].trim().parse().ok()
+}
+
+fn ordinal(n: usize) -> String {
+    let suffix = match (n % 10, n % 100) {
+        (_, 11..=13) => "th",
+        (1, _) => "st",
+        (2, _) => "nd",
+        (3, _) => "rd",
+        _ => "th",
+    };
+    format!("{n}{suffix}")
+}
+
+/// A part's kind in words. A kind a song defines for itself
+/// (`\newSongPartType{bridgeb}{**}…`) has no name but its macro.
+fn part_name(kind: &str) -> String {
+    let kind = kind.trim_end_matches('*');
+    match kind {
+        "verse" | "chorus" | "bridge" | "intro" | "outro" | "interlude" => kind.to_string(),
+        "prechorus" => "pre-chorus".to_string(),
+        "instrumental" => "instrumental part".to_string(),
+        _ => format!("\\begin{kind} part"),
     }
 }
 
@@ -619,7 +1178,10 @@ pub fn apply(text: &str, chosen: &[&Proposal]) -> Result<String, String> {
             );
         }
     }
-    let effects: Vec<(usize, Chords)> = chosen.iter().filter_map(|p| p.effect).collect();
+    let effects: Vec<(usize, Chords)> = chosen
+        .iter()
+        .flat_map(|p| p.effects.iter().copied())
+        .collect();
     if effects.len() > 1 {
         let scan = scan(text);
         let infos: Vec<PartInfo> = scan.parts.iter().map(|p| info(text, p)).collect();
@@ -678,7 +1240,8 @@ mod tests {
     fn a_verse_repeating_the_chords_of_the_first_can_hide_them() {
         let text = song(&[part("\\beginverse", &V), part("\\beginverse", &W)].concat());
         let ids = ids(&text);
-        assert_eq!(ids[0], "chordsoff@10");
+        // After joining the lines in pairs, which keeps every chord.
+        assert_eq!(ids[..2], ["joinlines@5", "chordsoff@10"]);
         assert!(ids.contains(&"chordsoffonsmallpage@10".to_string()));
         let out = applied(&text, "chordsoff@10");
         assert!(
@@ -917,7 +1480,10 @@ mod tests {
         // A glance back to the chorus reads better than chords looked up
         // elsewhere, line after line.
         let kinds: Vec<&str> = proposals(&text).iter().map(|p| p.kind).collect();
-        assert_eq!(kinds[..2], ["insertchorus*", "chordsoff"]);
+        assert_eq!(
+            kinds[..4],
+            ["joinlines", "joinlines", "insertchorus*", "chordsoff"]
+        );
     }
 
     /// The first proposal, applied, again and again: what a person taking
@@ -932,7 +1498,7 @@ mod tests {
         }
         let scan = scan(&text);
         (1..)
-            .zip(&scan.parts)
+            .zip(scan.parts.iter().filter(|p| p.kind == "verse"))
             .filter(|(_, p)| has_word(&text[p.opening_rest.clone()], "chordsoff"))
             .map(|(n, _)| n)
             .collect()
@@ -951,8 +1517,8 @@ mod tests {
         // Five: the last, then the third.
         assert_eq!(plain_verses(song(&verses(5)), 2), [3, 5]);
 
-        // Then the second can only go next to the plain third: offered,
-        // but rated lower and saying why.
+        // Then the second costs the plain third its chords right above
+        // it: it reads verse 1's, two lines further.
         let text = song(
             &[
                 part("\\beginverse", &V),
@@ -967,16 +1533,11 @@ mod tests {
             .into_iter()
             .find(|p| p.id == "chordsoff@10")
             .unwrap();
-        assert_eq!(p.grade(), "poor");
-        assert!(
-            p.description.contains("next to a verse already"),
-            "{}",
-            p.description
-        );
+        assert_eq!(p.score, CHORDS_OFF - 2 * PER_LINE_AWAY);
     }
 
     #[test]
-    fn a_neighbour_plain_on_small_paper_counts_for_every_paper() {
+    fn a_change_for_every_paper_counts_the_distance_on_small_paper() {
         let text = song(
             &[
                 part("\\beginverse", &V),
@@ -990,7 +1551,13 @@ mod tests {
             .into_iter()
             .find(|p| p.id == "chordsoff@15")
             .unwrap();
-        assert_eq!(p.grade(), "poor");
+        // On A4 verse 3 reads verse 2's chords right above it; on A5, where
+        // verse 2 has none, verse 1's, two lines further.
+        assert_eq!(
+            p.description,
+            "verse 3 repeats the chords of verse 2: \\chordsoff"
+        );
+        assert_eq!(p.score, CHORDS_OFF - 2 * PER_LINE_AWAY);
     }
 
     #[test]
@@ -1013,6 +1580,183 @@ mod tests {
     }
 
     #[test]
+    fn proposals_name_the_parts_as_the_page_prints_them() {
+        let text = song(
+            &[
+                part("\\beginchorus", &R),
+                part("\\beginverse", &V),
+                part("\\beginverse*", &["\\[C]Tag"]),
+                part("\\beginverse", &W),
+                "\\insertchorus\n\n".to_string(),
+                part("\\beginchorus", &R),
+            ]
+            .concat(),
+        );
+        let said: Vec<String> = proposals(&text)
+            .into_iter()
+            .filter(|p| p.stage == Stage::AllPapers)
+            .map(|p| p.description)
+            .collect();
+        assert!(
+            said.iter()
+                .any(|d| d.starts_with("verse 2 repeats the chords of verse 1 (1 line away)")),
+            "{said:?}"
+        );
+        assert!(
+            said.iter()
+                .any(|d| d.starts_with("the 2nd chorus is reprinted in full")),
+            "{said:?}"
+        );
+        assert!(
+            said.iter()
+                .any(|d| d.starts_with("the 3rd chorus has the words of the 1st chorus")),
+            "{said:?}"
+        );
+    }
+
+    fn join_of(text: &str, kind: &str) -> Option<Proposal> {
+        proposals(text)
+            .into_iter()
+            .find(|p| p.kind == "joinlines" && p.description.contains(kind))
+    }
+
+    #[test]
+    fn lines_of_every_part_of_a_kind_join_in_pairs() {
+        let text = song(&[part("\\beginverse", &V), part("\\beginverse", &W)].concat());
+        let p = join_of(&text, "verse").unwrap();
+        assert_eq!(p.grade(), "good");
+        assert!(p.needs_width_check());
+        // Both halves have chords: a lyric row and a chord row go per pair.
+        assert_eq!(p.gain_lines, 4);
+        let out = apply(&text, &[&p]).unwrap();
+        assert!(
+            out.contains("\\beginverse\n    \\[C]Jedna \\[G]dvě \\[Am]tři \\[F]čtyři\n\\endverse"),
+            "{out}"
+        );
+        assert!(
+            out.contains("    \\[C]Pět \\[G]šest \\[Am]sedm \\[F]osm\n"),
+            "{out}"
+        );
+        // It lengthens the verses' lines and no others.
+        assert!(p.lengthens(Some(6), false));
+        assert!(!p.lengthens(Some(3), false));
+        assert!(!p.lengthens(None, true));
+    }
+
+    #[test]
+    fn lines_join_only_where_every_part_of_the_kind_can() {
+        let odd = ["\\[C]Jedna", "\\[G]dvě", "\\[Am]tři"];
+        let text = song(&[part("\\beginverse", &V), part("\\beginverse", &odd)].concat());
+        assert!(join_of(&text, "verse").is_none());
+
+        // A comment would swallow the line joined after it; the comment of
+        // a pair's second line stays at its end.
+        let commented = ["\\[C]Jedna % dvě", "\\[Am]tři"];
+        let text = song(&part("\\beginverse", &commented));
+        assert!(join_of(&text, "verse").is_none());
+        let commented = ["\\[C]Jedna", "\\[Am]tři % čtyři"];
+        let text = song(&part("\\beginverse", &commented));
+        let out = apply(&text, &[&join_of(&text, "verse").unwrap()]).unwrap();
+        assert!(out.contains("\\[C]Jedna \\[Am]tři % čtyři\n"), "{out}");
+
+        for line in ["\\rep{2}", "\\chordson", "\\textnote{x}", "\\iflargepaper"] {
+            let lines = [&format!("\\[C]Jedna {line}") as &str, "\\[Am]tři"];
+            let text = song(&part("\\beginverse", &lines));
+            assert!(join_of(&text, "verse").is_none(), "{line}");
+        }
+        // A repeat sign at the end of the part stays at its end.
+        let lines = ["\\[C]Jedna", "\\[Am]tři \\rep{2}"];
+        assert!(join_of(&song(&part("\\beginverse", &lines)), "verse").is_some());
+
+        // A gap between lines means something.
+        let text = song("\\beginverse\n    \\[C]Jedna\n\n    \\[Am]tři\n\\endverse\n\n");
+        assert!(join_of(&text, "verse").is_none());
+    }
+
+    #[test]
+    fn of_two_verses_in_a_row_the_second_loses_its_chords() {
+        // 1 2 R 3 4 R 5: verses 4 and 2, never 3 or 5, which the reader
+        // meets coming back from the chorus.
+        let text = song(
+            &[
+                part("\\beginverse", &V),
+                part("\\beginverse", &W),
+                part("\\beginchorus", &R),
+                part("\\beginverse", &V),
+                part("\\beginverse", &W),
+                "\\insertchorus\n\n".to_string(),
+                part("\\beginverse", &V),
+            ]
+            .concat(),
+        );
+        assert_eq!(plain_verses(text.clone(), 1), [4]);
+        assert_eq!(plain_verses(text.clone(), 2), [2, 4]);
+        let p = proposals(&text)
+            .into_iter()
+            .find(|p| p.id == "chordsoff@20")
+            .unwrap();
+        // Verse 3 would read verse 2's chords across the chorus.
+        assert_eq!(
+            p.description,
+            "verse 3 repeats the chords of verse 2 (2 lines away): \\chordsoff"
+        );
+        assert_eq!(p.grade(), "fair");
+    }
+
+    #[test]
+    fn a_layout_in_a_corner_is_left_by_moving_the_chords() {
+        // 1 2 R 3- 4 R 5: the verse after the chorus is plain. Better than
+        // hiding one more is hiding 2 and 4 and showing 3 again.
+        let text = song(
+            &[
+                part("\\beginverse", &V),
+                part("\\beginverse", &W),
+                part("\\beginchorus", &R),
+                part("\\beginverse\\chordsoff", &V),
+                part("\\beginverse", &W),
+                "\\insertchorus\n\n".to_string(),
+                part("\\beginverse", &V),
+            ]
+            .concat(),
+        );
+        let p = proposals(&text)
+            .into_iter()
+            .find(|p| p.kind == "chordsoff")
+            .unwrap();
+        assert_eq!(p.id, "chordsoff@10+25-20");
+        assert_eq!(
+            p.description,
+            "hide the chords of verse 2 and verse 4 and show them again in verse 3, so the verses without chords are nearer to theirs: \\chordsoff"
+        );
+        assert_eq!(p.grade(), "fair");
+        // Each reads its chords right above it: verse 2 verse 1's, and
+        // verse 4 verse 3's.
+        let lines: Vec<usize> = p.sources.iter().map(|s| s.line).collect();
+        assert_eq!(lines, [5, 20]);
+        let out = apply(&text, &[&p]).unwrap();
+        assert_eq!(plain_verses(out, 0), [2, 4]);
+    }
+
+    #[test]
+    fn chords_go_where_they_are_nearest_and_stay_at_the_beginning() {
+        let chorus = || part("\\beginchorus", &R);
+        let again = || "\\insertchorus\n\n".to_string();
+        let verse = || part("\\beginverse", &V);
+        // V R V R V R: every verse is a chorus away from the one before, so
+        // the last loses its chords.
+        let text = song(&[verse(), chorus(), verse(), again(), verse(), again()].concat());
+        assert_eq!(plain_verses(text, 1), [3]);
+        // V V R V V R V V R: the second of the last pair, right below the
+        // chords it repeats.
+        let pairs: String = [verse(), verse(), chorus()]
+            .into_iter()
+            .chain((0..2).flat_map(|_| [verse(), verse(), again()]))
+            .collect();
+        assert_eq!(plain_verses(song(&pairs), 1), [6]);
+        assert_eq!(plain_verses(song(&pairs), 3), [2, 4, 6]);
+    }
+
+    #[test]
     fn every_proposal_has_its_rating() {
         let text = song(
             &[
@@ -1032,6 +1776,7 @@ mod tests {
         assert_eq!(
             grades,
             [
+                ("joinlines", "good"),
                 ("insertchorus*", "good"),
                 ("chordsoff", "fair"),
                 ("chordsoffonsmallpage", "fair"),
