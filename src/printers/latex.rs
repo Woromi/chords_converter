@@ -93,7 +93,7 @@ impl SongPrinter for LatexPrinter {
                 PartType::Tab => {
                     writeln!(writer, "\\beginverse*")?;
                     writeln!(writer, "{INDENT}% [TAB]")?;
-                    "\\endverse*"
+                    "\\endverse"
                 }
                 PartType::Outro => {
                     writeln!(writer, "\\beginoutro")?;
@@ -102,7 +102,7 @@ impl SongPrinter for LatexPrinter {
                 PartType::Other(name) => {
                     writeln!(writer, "\\beginverse*")?;
                     writeln!(writer, "{INDENT}% [{}]", one_line(&name.to_uppercase()))?;
-                    "\\endverse*"
+                    "\\endverse"
                 }
             };
 
@@ -934,7 +934,21 @@ mod tests {
     #[test]
     fn tablature_is_never_an_instrumental() {
         let tab = part(PartType::Tab, vec![line("", &[(0, "C")])]);
-        assert!(body(vec![tab]).starts_with("\\beginverse*\n    % [TAB]\n"));
+        let out = body(vec![tab]);
+        assert!(out.starts_with("\\beginverse*\n    % [TAB]\n"));
+        // The star belongs to the opening only: `\endverse*` prints one.
+        assert!(out.ends_with("\\endverse\n\n"), "{out}");
+    }
+
+    #[test]
+    fn a_part_of_no_known_kind_is_an_unnumbered_verse() {
+        let other = part(
+            PartType::Other("spoken".to_string()),
+            vec![line("Hello there", &[(0, "C")])],
+        );
+        let out = body(vec![other]);
+        assert!(out.starts_with("\\beginverse*\n    % [SPOKEN]\n"), "{out}");
+        assert!(out.ends_with("\\endverse\n\n"), "{out}");
     }
 
     #[test]
