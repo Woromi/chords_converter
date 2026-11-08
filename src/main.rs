@@ -636,6 +636,7 @@ fn apply_file(file: &Path, ids: &[String], output: &Output) -> Result<(), String
 
 const USAGE: &str = "\
 Usage:
+  chords_converter --version | --help
   chords_converter <SOURCE> [FORMAT]
   chords_converter convert <SOURCE> [--format FORMAT] [--tidy] [-o FILE | -o -]
   chords_converter tidy <SONG.tex> [-o FILE | -o -]
@@ -668,6 +669,9 @@ apply makes the chosen ones; apply one, then ask again.";
 #[derive(Debug, PartialEq)]
 enum Command {
     Help,
+    /// The tool's version, for a caller checking it is new enough: it goes up
+    /// whenever the command line or the `suggest --json` format changes.
+    Version,
     Convert {
         source: String,
         format: String,
@@ -701,6 +705,7 @@ fn parse_args(args: &[String]) -> Result<Command, String> {
     };
     match first.as_str() {
         "-h" | "--help" | "help" => Ok(Command::Help),
+        "-V" | "--version" | "version" => Ok(Command::Version),
         "convert" => parse_convert(&args[1..]),
         "tidy" => parse_tidy(&args[1..]),
         "suggest" => parse_suggest(&args[1..]),
@@ -876,6 +881,10 @@ async fn main() {
     let result = match command {
         Command::Help => {
             println!("{}", USAGE);
+            return;
+        }
+        Command::Version => {
+            println!("chords_converter {}", env!("CARGO_PKG_VERSION"));
             return;
         }
         Command::Tidy { file, output } => tidy_file(&file, &output),
@@ -1107,5 +1116,15 @@ mod tests {
         assert_eq!(pages_allowed("    pap={a4,a5},\n", "a5"), 1);
         assert_eq!(pages_allowed("    % pap={a5x2},\n", "a5"), 1);
         assert_eq!(pages_allowed("    pap={a4,a5x2},\n", "a4"), 1);
+    }
+
+    #[test]
+    fn version_and_help_are_not_sources() {
+        for arg in ["--version", "-V", "version"] {
+            assert_eq!(parse_args(&args(&[arg])), Ok(Command::Version), "{arg}");
+        }
+        for arg in ["--help", "-h", "help"] {
+            assert_eq!(parse_args(&args(&[arg])), Ok(Command::Help), "{arg}");
+        }
     }
 }

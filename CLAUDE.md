@@ -22,6 +22,13 @@ cargo run -- <url|file.html|file.txt|-> [latex|text|debug]
                                    # writes out/<format>/<Artist>/<Title>.<ext>
 ```
 
+**The version in `Cargo.toml` is part of the interface.** ZubuvZpevnikUi
+runs this tool (as a git submodule, built next to the app) and checks
+`chords_converter --version` against a minimum. Raise the minor version
+(`0.2.0` → `0.3.0`) in the same commit as any change to the command line,
+the exit codes, the `Saving output to:` lines or the `suggest --json`
+format, and tell the UI (a note in its `docs/`).
+
 `out/` and `target/` are gitignored. `README.md` is the user-facing manual
 (sites, text input format, bot checks). Keep it in step with the code.
 
