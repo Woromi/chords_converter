@@ -104,7 +104,37 @@ part of the identical-output check `\insertchorus` has.
          37 → 32.
    - [x] Idempotent: moves first, then choruses on the moved text; a second
          pass over every tidied songbook song changes nothing.
-5. **Tier 3 `suggest`/`apply`.** The two fitting stages.
+5. [x] **Tier 3 `suggest`/`apply`** (`src/tex/fit.rs`, `src/tex/measure.rs`):
+   - [x] Proposals: `\chordsoff` / `\chordsoffonsmallpage` on a part repeating
+         an earlier part's chords (the first keeps them, and chorded parts stay
+         spread out, checked per paper and for proposals chosen together),
+         `\insertchorus*` for a chorus with the same words (chords may differ,
+         apostrophes ignored) or a full `\insertchorus`, and
+         `\smalleronsmallpage` before the first part.
+   - [x] `--measure`: the songbook's own `checkpaper.measure()` in a
+         temporary root linking the songbook (no writes there), with the
+         LilyPond cache in `~/.cache/chords_converter`. Fits = pages within
+         the allowance (2 on A5 for `pap={…a5x2}`) and no line too wide.
+   - [x] Precision: `suggest --fit a5 --measure` on all 198 songs marked for
+         A5: 197 fit with nothing proposed. The one that doesn't
+         (XindlX/VBlbymVeku, line 67 too wide) is confirmed by
+         `checkpaper.py --measure a5`: its `a5` mark is stale.
+   - [x] Spreading: a change may not add a break of the rule, neither for
+         the part it touches nor for a neighbour it strands (counted before
+         and after, per kind and paper). Every chord-hiding proposal on all
+         216 songs (274), applied alone, checked by an independent script:
+         no break added.
+   - [x] A chorus is not shortened when a full `\insertchorus` after it
+         reprints it (the reprint would go back to the chorus before).
+   - [x] Too-wide lines: a verse's line number is right; a chorus's isn't
+         known (the probe reports the chorus's first line), so only "a line
+         of a chorus" is said.
+   - [x] End to end on drafts: applying the first proposal and asking again
+         stops. Forever And One gets the two `\insertchorus*` the hand edit
+         chose. Africa runs out of proposals at 2 A4 pages: what the hand
+         edit did there (joined lines, transposition) is not a lever here.
+   - [ ] Re-breaking lines (CLAUDE.md lever 2) stays a human judgement;
+         `suggest` names the too-wide lines.
 6. **Corpus checks (`printer-gap`).** Drafts move closer to the finished
    songs. `suggest` on *finished* songs proposes almost nothing, and every
    proposal there is a false positive to examine. (`tidy` on finished songs

@@ -236,8 +236,8 @@ songbook shows all of it):
   guess (Kluziste needs two chords to a bar);
 - lines are as short as the site split them, not joined into whole phrases;
 - repeated choruses are printed in full (`--tidy` makes an identical one
-  `\insertchorus`; `\insertchorus*` is a person's decision), and repeated
-  verses keep their chords instead of `\chordsoff`;
+  `\insertchorus`), and repeated verses keep their chords. `\insertchorus*`
+  and `\chordsoff` are a person's decision, which `suggest` proposes;
 - without `--tidy`, chords sit where the site put them, often a letter inside
   the syllable (`D\[E]o` for `\[E]Do`);
 - `met`, `cap`, `key` are left commented out when the site did not give them,

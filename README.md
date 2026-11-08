@@ -57,6 +57,55 @@ it, so it is never left half written.
   consonants, never across a vowel. This one does change where a chord
   prints, which is the point.
 
+### Fitting a page: `suggest` and `apply`
+
+Some changes alter what a song prints, so a person decides on them.
+`suggest` lists them, best first, and `apply` makes the ones chosen:
+
+```
+cargo run -- suggest Song.tex --fit a5 --measure
+cargo run -- apply Song.tex --id chordsoff@31          # then suggest again
+```
+
+```
+Song.tex
+  A4: 1 page, fits
+  A5: 2 pages, does not fit
+  It fits A4: the changes for small paper only.
+  Proposals, best first:
+    chordsoffonsmallpage@35      line  35  the verse repeats the chords of line 17: \chordsoffonsmallpage (~6 lines)
+    smalleronsmallpage@13        line  13  set the song a size smaller on small paper (8 pt): \smalleronsmallpage (~7 lines)
+```
+
+- **Two stages.** A song that overflows A4 overflows A5 too, so it is first
+  fitted to A4 with changes that act on every paper: `\chordsoff` on a part
+  that repeats the chords of an earlier one, then `\insertchorus*` for a
+  chorus sung again with the same words (or reprinted with `\insertchorus`).
+  Once A4 fits, the changes act on small paper only:
+  `\chordsoffonsmallpage`, then `\smalleronsmallpage` as the last resort.
+- **Ranking.** Hiding chords already shown loses nothing, so it comes before
+  shortening a chorus to its reminder line. Within a kind, the bigger saving
+  comes first. The saving is an estimate in printed lines, a chord row
+  counting as one.
+- **Chords stay spread out.** The first part of a kind keeps its chords, and
+  a part that loses them must still have a chorded neighbour of its kind.
+  This holds on each paper, for each proposal and for any chosen together.
+- **`--measure`** typesets the song with the songbook's own
+  `scripts/checkpaper.py` (the reference measurement, not imitated) and says
+  how many pages it takes and which lines are too wide. A song fits when it
+  takes one page (two for `pap={…a5x2}`) and no line is too wide; a too-wide
+  line is re-broken by hand. The song is measured in a temporary copy of the
+  songbook's layout, so a draft that isn't in the songbook yet can be
+  measured too, and nothing is written into the songbook. The songbook is
+  `../ZubuvZpevnik` unless `--songbook DIR` says otherwise. Once a song fits,
+  record it with `scripts/checkpaper.py --measure a5 --write <song>` there.
+- **`--json`** gives the same for a program, each proposal with its edits as
+  UTF-8 byte offsets into the file.
+- **`apply`** finds the proposals afresh in the file as it is, so an id from
+  an older `suggest` that no longer applies is refused. Proposals that change
+  the same text, or that together would leave a part without a chorded
+  neighbour, are refused together; apply one, then suggest again.
+
 The tool exits with 1 when the song could not be read or written and with 2
 when the command line is wrong, so a caller need not read the messages to
 know it failed.
