@@ -91,15 +91,15 @@ it, so it is never left half written.
   consonants, never across a vowel. This one does change where a chord
   prints, which is the point.
 
-### Fitting a page: `suggest` and `apply`
+### Fitting a page: `shrink`, `join` and `apply`
 
 Some changes alter what a song prints, so a person decides on them.
-`suggest` lists them, rated and most readable first, and `apply` makes the
+`shrink` lists them, rated and most readable first, and `apply` makes the
 ones chosen:
 
 ```
-cargo run -- suggest Song.tex --fit a5 --measure
-cargo run -- apply Song.tex --id chordsoff@31          # then suggest again
+cargo run -- shrink Song.tex --fit a5 --measure
+cargo run -- apply Song.tex --id chordsoff@31          # then shrink again
 cargo run -- join Song.tex                             # lines joined in pairs, checked
 ```
 
@@ -116,8 +116,9 @@ Song.tex
 
 - **Two stages.** A song that overflows A4 overflows A5 too, so it is first
   fitted to A4 with changes that act on every paper: `\insertchorus*` for a
-  chorus sung again with the same words (or reprinted with
-  `\insertchorus`), `\chordsoff` on a part that repeats the chords of an
+  chorus sung again with the same words and chords, give or take one chord
+  (or reprinted with `\insertchorus`; a chorus in another key keeps its
+  chords, since the reminder prints none), `\chordsoff` on a part that repeats the chords of an
   earlier one. Once A4 fits, the changes act on small paper only:
   `\chordsoffonsmallpage`, then `\smalleronsmallpage` as the last resort.
 - **Rating.** Each proposal has a score from 0 to 100 for how readable it
@@ -148,16 +149,6 @@ Song.tex
   gets more chords back than it loses. The saving is an estimate in printed
   lines, a chord row counting as one; a change that saves none is not
   offered.
-- **Restructuring.** A part with the words of the latest chorus that isn't
-  a chorus (a modulated chorus a site marked "key change" comes in as
-  unnumbered verses) may be the chorus sung again. Only a person can tell
-  (the same words need not be the same melody), so each such part is a
-  proposal of its own, and it only makes the part a chorus, its chords
-  kept. The rest is the other rules, a step at a time: `tidy` makes a
-  chorus typed out again `\insertchorus`, and `suggest` then offers
-  `\insertchorus*`. It changes what the parts are, so it is listed apart
-  (`category: "restructure"` in the JSON), and it is offered although it
-  saves no line by itself.
 - **Joining lines: `join`, a command of its own.** Every two lines of every
   part of a kind (all verses, say) become one: fewer, longer lines, all of
   one musical length again. It is offered only if every part of the kind
@@ -165,8 +156,8 @@ Song.tex
   switch, `\textnote`, `\if…` or `\rep` before a part's last line in the
   way), and only once the joined song is typeset with no line too wide on
   A4 or A5 (nor one already). That is a typesetting run per kind of part,
-  seconds on a long song, so `suggest` leaves it out and `join` does it on
-  request. Its output is `suggest`'s, and its ids work with `apply`.
+  seconds on a long song, so `shrink` leaves it out and `join` does it on
+  request. Its output is `shrink`'s, and its ids work with `apply`.
 - **Chords stay spread out.** The first part of a kind keeps its chords, and
   a part that loses them must still have a chorded neighbour of its kind.
   This holds on each paper, for each proposal and for any chosen together.
@@ -190,9 +181,30 @@ Song.tex
   reminder stands for), each as its first line and its bytes from `\begin…`
   to the end of `\end…`.
 - **`apply`** finds the proposals afresh in the file as it is, so an id from
-  an older `suggest` that no longer applies is refused. Proposals that change
+  an older `shrink` that no longer applies is refused. Proposals that change
   the same text, or that together would leave a part without a chorded
-  neighbour, are refused together; apply one, then suggest again.
+  neighbour, are refused together; apply one, then shrink again.
+
+### Corrections: `check`
+
+`check` lists what may be wrong in a song, whether it fits a page or not,
+in the same format as `shrink` (`--json` too), and `apply` makes the ones
+chosen. Fitting and correcting are different actions, so neither lists the
+other's proposals (`shrink` was called `suggest` until 0.6.0; that name
+still works).
+
+```
+cargo run -- check Song.tex
+```
+
+- **A chorus typed as something else.** A part with the words of the
+  latest chorus that isn't a chorus (a modulated chorus a site marked "key change" comes in as
+  unnumbered verses) may be the chorus sung again. Only a person can tell
+  (the same words need not be the same melody), so each such part is a
+  proposal of its own, and it only makes the part a chorus, its chords
+  kept. The rest is the other rules, a step at a time: `tidy` makes a
+  chorus typed out again `\insertchorus`, and `shrink` then offers
+  `\insertchorus*`. Its `category` in the JSON is `"restructure"`.
 
 The tool exits with 1 when the song could not be read or written and with 2
 when the command line is wrong, so a caller need not read the messages to

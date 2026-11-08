@@ -37,15 +37,15 @@ That form keeps working. Its output changes only through tier-1 improvements.
 ```
 chords_converter convert <source> [--format latex] [--tidy] [-o FILE|-]
 chords_converter tidy    <song.tex> [-o FILE|-]               # tier 2, applies all
-chords_converter suggest <song.tex> [--fit a4|a5] [--kinds …] [--measure --songbook DIR] [--json]
+chords_converter shrink <song.tex> [--fit a4|a5] [--kinds …] [--measure --songbook DIR] [--json]
 chords_converter apply   <song.tex> --id ID… [-o FILE|-]      # tier 3, chosen proposals
 ```
 
-- `suggest --json`: `{proposals: [{id, kind, description, gain_lines,
+- `shrink --json`: `{proposals: [{id, kind, description, gain_lines,
   edits: [{start, end, replacement}]}], measured?: {a4: pages, a5: pages}}`.
   Offsets are UTF-8 bytes of the file, and one proposal is one undo step in
   the UI. Ids are stable for the same text, so `apply --id` can follow
-  `suggest`. The first proposal is the recommended next step.
+  `shrink`. The first proposal is the recommended next step.
 - A failed write exits non-zero (today it exits 0).
 
 ## Fitting (tier 3), in two stages
@@ -81,7 +81,7 @@ part of the identical-output check `\insertchorus` has.
 
 1. [x] **CLI.** `convert` with `--format` and `-o FILE|-`, the legacy form
    unchanged, exit codes (1 failed, 2 bad usage), a saved bot check refused.
-   `tidy`/`suggest`/`apply` come with their milestones.
+   `tidy`/`shrink`/`apply` come with their milestones.
 2. [x] **Tier 1 in the printer.** Every chord-only part (not tablature) is an
    instrumental in bars: the source's `|` bars kept, otherwise one chord per
    bar, at least two slots, and `x2` → `\rep{2}`. Trailing chords one space
@@ -113,18 +113,19 @@ part of the identical-output check `\insertchorus` has.
          not, 25 more songs gained reminders, all pixel-identical.
    - [x] Idempotent: moves first, then choruses on the moved text; a second
          pass over every tidied songbook song changes nothing.
-5. [x] **Tier 3 `suggest`/`apply`** (`src/tex/fit.rs`, `src/tex/measure.rs`):
+5. [x] **Tier 3 `shrink` (until 0.6.0 `suggest`)/`apply`** (`src/tex/fit.rs`, `src/tex/measure.rs`):
    - [x] Proposals: `\chordsoff` / `\chordsoffonsmallpage` on a part repeating
          an earlier part's chords (the first keeps them, and chorded parts stay
          spread out, checked per paper and for proposals chosen together),
-         `\insertchorus*` for a chorus with the same words (chords may differ,
-         apostrophes ignored) or a full `\insertchorus`, and
+         `\insertchorus*` for a chorus with the same words (apostrophes
+         ignored) and the same chords give or take one (not a chorus in
+         another key or with its own ending: Eldorado, O blechách) or a full `\insertchorus`, and
          `\smalleronsmallpage` before the first part.
    - [x] `--measure`: the songbook's own `checkpaper.measure()` in a
          temporary root linking the songbook (no writes there), with the
          LilyPond cache in `~/.cache/chords_converter`. Fits = pages within
          the allowance (2 on A5 for `pap={…a5x2}`) and no line too wide.
-   - [x] Precision: `suggest --fit a5 --measure` on all 198 songs marked for
+   - [x] Precision: `shrink --fit a5 --measure` on all 198 songs marked for
          A5: 197 fit with nothing proposed. The one that doesn't
          (XindlX/VBlbymVeku, line 67 too wide) is confirmed by
          `checkpaper.py --measure a5`: its `a5` mark is stale.
@@ -158,20 +159,30 @@ part of the identical-output check `\insertchorus` has.
          comment, switch, `\textnote`, `\if` or inner `\rep` in the way)
          the joined song typesets with no line too wide on A4 or A5 and no
          more pages. Rated 90: every word and chord stays. Its own command,
-         `join` (0.5.0): the checks took Letter to Dana's `suggest` from
+         `join` (0.5.0): the checks took Letter to Dana's `shrink` from
          0.8 s to 6.4 s on every click.
    - [x] Restructuring (0.5.0, suggested by the user 2026-11-08): parts
          with the latest chorus's words that aren't choruses may become a
          chorus, each its own proposal (the same words need not be the same
-         melody), and nothing more; `tidy` and `suggest` do the rest
+         melody), and nothing more; `tidy` and `shrink` do the rest
          (decided with the user: doing it all at once risks more).
          `category: "restructure"`. Letter to Dana: three "key change"
          unnumbered verses → three choruses → `tidy`: a chorus and two
-         `\insertchorus` → `suggest`: `\insertchorus*` for each.
+         `\insertchorus` → `shrink`: `\insertchorus*` for each.
+   - [x] Commands by purpose (0.6.0, decided with the user): `suggest`
+         is `shrink` (the old name still works), and corrections moved to
+         `check`, since fitting and correcting are different actions: an
+         app that hides Make Smaller for a song that fits must still offer
+         them. A chorus reminder needs the chorus's chords give or take one.
+   - [ ] `check`: typos. Copies of the same text differing by a letter or
+         an apostrophe; typography (mixed `'`/`’`, a missing `~` after a
+         Czech one-letter preposition, `~` in an English song); later,
+         spelling against the Hunspell dictionary of the song's `lang`,
+         listed, never fixed.
    - [ ] Re-breaking lines at other points stays a human judgement;
-         `suggest` names the too-wide lines.
+         `shrink` names the too-wide lines.
 6. **Corpus checks (`printer-gap`).** Drafts move closer to the finished
-   songs. `suggest` on *finished* songs proposes almost nothing, and every
+   songs. `shrink` on *finished* songs proposes almost nothing, and every
    proposal there is a false positive to examine. (`tidy` on finished songs
    does find real work: import leftovers nobody fixed by hand.)
 
@@ -183,7 +194,7 @@ part of the identical-output check `\insertchorus` has.
   chords off, becomes `\insertchorus[][\chordsoff]`. Gate: 21 songbook
   copies, pixel-identical on A4 and A5. With it, setup on lines of its own
   joins the opening line (140 lines, pixel-identical), so every rule finds
-  the switches in one place. Still open: `suggest` could offer
+  the switches in one place. Still open: `shrink` could offer
   `\insertchorus` → `\insertchorus[][\chordsoffonsmallpage]` as a chords-off
   lever.
 

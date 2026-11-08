@@ -739,9 +739,10 @@ fn violations(plain: &[bool]) -> usize {
 }
 
 /// A chorus sung again with the same words as the chorus before it becomes
-/// the one-line reminder `\insertchorus*` (its chords may differ: the
-/// reminder prints none). So does a full `\insertchorus`. A chorus that comes
-/// back with new words keeps them.
+/// the one-line reminder `\insertchorus*`, when its chords are the same give
+/// or take one (`chords_close`): the reminder prints none, so the player
+/// plays the chorus before. So does a full `\insertchorus`. A chorus that
+/// comes back with new words or other chords keeps them.
 fn chorus_reminders(text: &str, scan: &Scan, infos: &[PartInfo], names: &Names) -> Vec<Proposal> {
     let choruses: Vec<usize> = (0..infos.len())
         .filter(|&i| infos[i].part.kind == "chorus")
@@ -789,6 +790,7 @@ fn chorus_reminders(text: &str, scan: &Scan, infos: &[PartInfo], names: &Names) 
         if latest.part.number != repeat.part.number
             || latest.words != repeat.words
             || latest.words.trim().is_empty()
+            || !chords_close(latest, repeat)
             || replayed_later
             || reprinted_later
         {
@@ -1042,6 +1044,28 @@ fn choruses_in_disguise(infos: &[PartInfo], names: &Names) -> Vec<Proposal> {
         });
     }
     proposals
+}
+
+/// Whether a chorus sung again plays the chords of the one before, so its
+/// reminder, which prints none, leaves nothing out: the same chords, give or
+/// take one added, dropped or changed (a site's slip, as in Forever And One).
+/// A chorus in another key, or played otherwise, keeps its own (the user).
+/// A chorus that replays its chords with `^` plays the same ones.
+fn chords_close(latest: &PartInfo, repeat: &PartInfo) -> bool {
+    let (Some(a), Some(b)) = (&latest.chords, &repeat.chords) else {
+        return true;
+    };
+    // Edit distance, one row at a time.
+    let mut row: Vec<usize> = (0..=b.len()).collect();
+    for (i, x) in a.iter().enumerate() {
+        let mut next = vec![i + 1];
+        for (j, y) in b.iter().enumerate() {
+            let cost = usize::from(x != y);
+            next.push((row[j] + cost).min(row[j + 1] + 1).min(next[j] + 1));
+        }
+        row = next;
+    }
+    row[b.len()] <= 1
 }
 
 /// The last resort on small paper: the whole song a type size smaller
@@ -1420,7 +1444,8 @@ mod tests {
 
     #[test]
     fn a_chorus_with_the_same_words_becomes_its_reminder() {
-        let other_chords = ["\\[D]Refrén \\[E]zní", "\\[A]a zní"];
+        // One chord changed is a slip, not another way to play it.
+        let other_chords = ["\\[F]Refrén \\[G]zní", "\\[Am]a zní"];
         let text = song(
             &[
                 part("\\beginchorus", &R),
@@ -1434,6 +1459,15 @@ mod tests {
             out.ends_with("\\endverse\n\n\\insertchorus*\n\n\\endsong\n"),
             "{out}"
         );
+    }
+
+    #[test]
+    fn a_chorus_with_other_chords_keeps_them() {
+        // The chorus sung again a key higher: its reminder would print the
+        // words alone, and the player would play the first chorus's chords.
+        let up = ["\\[G]Refrén \\[A]zní", "\\[D]a zní"];
+        let text = song(&[part("\\beginchorus", &R), part("\\beginchorus", &up)].concat());
+        assert!(!ids(&text).iter().any(|id| id.starts_with("insertchorus")));
     }
 
     #[test]

@@ -433,20 +433,33 @@ fn pages_allowed(text: &str, paper: &str) -> u32 {
     if marked_spread { 2 } else { 1 }
 }
 
+/// Which proposals a listing gives: the three commands share the format,
+/// so a program shows them alike and `apply` takes ids from any of them.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Listing {
+    /// `shrink`: changes that make the song shorter, to fit a page.
+    Shrink,
+    /// `join`: lines joined in pairs, each checked by typesetting.
+    Join,
+    /// `check`: corrections, whether the song fits or not.
+    Check,
+}
+
 /// Lists the proposals for a song, and with `--measure` says whether it fits.
 ///
 /// `--fit a4` offers the changes that act on every paper. `--fit a5` does
 /// too while the song still overflows A4 (it overflows A5 then as well), and
 /// the changes for small paper only once A4 fits. Without `--measure` there
 /// is no telling, so both stages are listed, every-paper changes first.
-fn suggest(
+fn list_proposals(
     file: &Path,
     fit: Option<&str>,
     measure: bool,
     songbook: Option<&Path>,
     json: bool,
-    joins: bool,
+    listing: Listing,
 ) -> Result<(), String> {
+    let joins = listing == Listing::Join;
     use tex::fit::Stage;
     let text = fs::read_to_string(file)
         .map_err(|e| format!("Failed to read file '{}': {}", file.display(), e))?;
@@ -469,7 +482,7 @@ fn suggest(
     let mut stages = vec![Stage::AllPapers, Stage::SmallPaper];
     let mut fits = None;
     let mut note = String::new();
-    match (fit, measure && !joins) {
+    match (fit, measure && listing == Listing::Shrink) {
         (Some("a4"), false) => stages = vec![Stage::AllPapers],
         (Some("a4"), true) => {
             stages = vec![Stage::AllPapers];
@@ -502,7 +515,7 @@ fn suggest(
         fits = Some(false);
     }
     // Joined lines are checked by typesetting the joined song, a run per
-    // kind of part, which is too slow for every suggest: they have their
+    // kind of part, which is too slow for every shrink: they have their
     // own command, `join`. No line they lengthen may be too wide already,
     // and none may come out too wide, on either paper.
     let mut shown: Vec<&tex::fit::Proposal> = Vec::new();
@@ -532,10 +545,14 @@ fn suggest(
                 shown.push(p);
             }
         }
+    } else if listing == Listing::Check {
+        // Corrections in the order of the song.
+        shown = all.iter().filter(|p| p.is_restructure()).collect();
+        shown.sort_by_key(|p| p.line);
     } else {
         shown = all
             .iter()
-            .filter(|p| !p.needs_width_check() && stages.contains(&p.stage))
+            .filter(|p| !p.needs_width_check() && !p.is_restructure() && stages.contains(&p.stage))
             .collect();
     }
 
@@ -638,25 +655,30 @@ fn suggest(
             paper.to_uppercase(),
             paper
         ));
+    } else if shown.is_empty() && listing == Listing::Check {
+        out.push_str("  Nothing to correct found.\n");
+    } else if listing == Listing::Check {
+        out.push_str("  Corrections, for a person to judge:\n");
+        for p in &shown {
+            out.push_str(&format!("    {:<28} {}\n", p.id, p.description));
+        }
+        out.push_str(&format!(
+            "  Apply one with: chords_converter apply {} --id <id>, then run tidy.\n",
+            file.display()
+        ));
     } else if shown.is_empty() && joins {
         out.push_str("  No lines can be joined in pairs and still fit A4 and A5.\n");
     } else if shown.is_empty() {
         out.push_str("  Nothing left to propose.\n");
     } else {
         out.push_str("  Proposals by paper, the most readable first (score 0-100):\n");
-        // Restructuring first, apart: it changes what the parts are.
-        let mut ordered: Vec<&&tex::fit::Proposal> =
-            shown.iter().filter(|p| p.is_restructure()).collect();
-        ordered.extend(shown.iter().filter(|p| !p.is_restructure()));
-        let mut group = None;
-        for p in ordered {
-            let this = (p.is_restructure(), p.stage);
-            if group != Some(this) {
-                group = Some(this);
-                out.push_str(match this {
-                    (true, _) => "   restructuring, the parts become what they are:\n",
-                    (false, Stage::AllPapers) => "   for every paper:\n",
-                    (false, Stage::SmallPaper) => "   for small paper only:\n",
+        let mut stage = None;
+        for p in &shown {
+            if stage != Some(p.stage) {
+                stage = Some(p.stage);
+                out.push_str(match p.stage {
+                    Stage::AllPapers => "   for every paper:\n",
+                    Stage::SmallPaper => "   for small paper only:\n",
                 });
             }
             out.push_str(&format!(
@@ -677,7 +699,7 @@ fn suggest(
 }
 
 /// Applies the chosen proposals to a song. The proposals are found afresh
-/// in the file as it is now, so an id from an older `suggest` that no longer
+/// in the file as it is now, so an id from an older listing that no longer
 /// applies is refused rather than applied to the wrong bytes.
 fn apply_file(file: &Path, ids: &[String], output: &Output) -> Result<(), String> {
     let text = fs::read_to_string(file)
@@ -687,7 +709,7 @@ fn apply_file(file: &Path, ids: &[String], output: &Output) -> Result<(), String
     for id in ids {
         let proposal = all.iter().find(|p| &p.id == id).ok_or_else(|| {
             format!(
-                "No proposal '{}' for '{}' (ask again with suggest).",
+                "No proposal '{}' for '{}' (ask again with shrink, join or check).",
                 id,
                 file.display()
             )
@@ -707,8 +729,9 @@ Usage:
   chords_converter <SOURCE> [FORMAT]
   chords_converter convert <SOURCE> [--format FORMAT] [--tidy] [-o FILE | -o -]
   chords_converter tidy <SONG.tex> [-o FILE | -o -]
-  chords_converter suggest <SONG.tex> [--fit a4|a5] [--measure] [--songbook DIR] [--json]
+  chords_converter shrink <SONG.tex> [--fit a4|a5] [--measure] [--songbook DIR] [--json]
   chords_converter join <SONG.tex> [--songbook DIR] [--json]
+  chords_converter check <SONG.tex> [--json]
   chords_converter apply <SONG.tex> --id ID [--id ID ...] [-o FILE | -o -]
 
 SOURCE   a URL of a supported website, a local text file (chords over
@@ -725,8 +748,8 @@ syllable moves to the syllable's start. It rewrites the file unless
 -o is given, and lists every change on stderr. convert --tidy does the same
 to the draft.
 
-suggest lists changes to what a song prints, for a person to accept or
-reject, rated by how readable they leave the song (0-100: good, fair,
+shrink (until 0.6.0 suggest, which still works) lists changes that make
+a song shorter, for a person to accept or reject, rated by how readable they leave the song (0-100: good, fair,
 poor, last resort) and most readable first: a chorus shortened to its
 reminder line, chords hidden where they repeat ones shown just before
 (the nearer, the better, and late in the song rather than early), a
@@ -737,14 +760,18 @@ the song with the songbook's own scripts/checkpaper.py (the songbook is
 join offers every two lines of each part of a kind joined into one, where
 every part of the kind can take it, after typesetting the joined song to
 check no line comes out too wide on A4 or A5 (slow: a run per kind).
-apply makes the chosen ones; apply one, then ask again.";
+check lists corrections, whether the song fits or not: a part with the
+chorus's words typed as something else may be made a chorus (then tidy
+reprints its copies).
+apply makes the chosen ones, from any of the three; apply one, then ask
+again.";
 
 /// What the command line asks for.
 #[derive(Debug, PartialEq)]
 enum Command {
     Help,
     /// The tool's version, for a caller checking it is new enough: it goes up
-    /// whenever the command line or the `suggest --json` format changes.
+    /// whenever the command line or the `shrink --json` format changes.
     Version,
     Convert {
         source: String,
@@ -761,6 +788,11 @@ enum Command {
         fit: Option<String>,
         measure: bool,
         songbook: Option<PathBuf>,
+        json: bool,
+    },
+    /// Corrections a person judges: a part that may be the chorus.
+    Check {
+        file: PathBuf,
         json: bool,
     },
     /// Lines joined in pairs, each checked by typesetting the joined song.
@@ -802,7 +834,18 @@ fn parse_args(args: &[String]) -> Result<Command, String> {
             }),
             _ => Err("join takes no --fit: it checks A4 and A5 both.".to_string()),
         },
-        "suggest" => parse_suggest(&args[1..]),
+        // `suggest` was its name until 0.6.0; callers may still use it.
+        "shrink" | "suggest" => parse_suggest(&args[1..]),
+        "check" => match parse_suggest(&args[1..])? {
+            Command::Suggest {
+                file,
+                fit: None,
+                measure: false,
+                songbook: None,
+                json,
+            } => Ok(Command::Check { file, json }),
+            _ => Err("check takes only a song file and --json.".to_string()),
+        },
         "apply" => parse_apply(&args[1..]),
         _ => match args {
             [source] => Ok(Command::Convert {
@@ -894,7 +937,7 @@ fn parse_suggest(args: &[String]) -> Result<Command, String> {
             _ => file = Some(PathBuf::from(arg)),
         }
     }
-    let file = file.ok_or_else(|| "suggest needs a song file.".to_string())?;
+    let file = file.ok_or_else(|| "A song file is needed.".to_string())?;
     Ok(Command::Suggest {
         file,
         fit,
@@ -988,19 +1031,22 @@ async fn main() {
             measure,
             songbook,
             json,
-        } => suggest(
+        } => list_proposals(
             &file,
             fit.as_deref(),
             measure,
             songbook.as_deref(),
             json,
-            false,
+            Listing::Shrink,
         ),
         Command::Join {
             file,
             songbook,
             json,
-        } => suggest(&file, None, true, songbook.as_deref(), json, true),
+        } => list_proposals(&file, None, true, songbook.as_deref(), json, Listing::Join),
+        Command::Check { file, json } => {
+            list_proposals(&file, None, false, None, json, Listing::Check)
+        }
         Command::Apply { file, ids, output } => apply_file(&file, &ids, &output),
         Command::Convert {
             source,
@@ -1195,6 +1241,19 @@ mod tests {
         );
         assert!(parse_args(&args(&["suggest", "S.tex", "--fit", "letter"])).is_err());
         assert!(parse_args(&args(&["suggest"])).is_err());
+        // shrink is the name now; suggest stays for older callers.
+        assert_eq!(
+            parse_args(&args(&["shrink", "S.tex"])),
+            parse_args(&args(&["suggest", "S.tex"]))
+        );
+        assert_eq!(
+            parse_args(&args(&["check", "S.tex", "--json"])),
+            Ok(Command::Check {
+                file: "S.tex".into(),
+                json: true,
+            })
+        );
+        assert!(parse_args(&args(&["check", "S.tex", "--measure"])).is_err());
         assert_eq!(
             parse_args(&args(&["join", "S.tex", "--json"])),
             Ok(Command::Join {

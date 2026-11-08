@@ -25,8 +25,8 @@ cargo run -- <url|file.html|file.txt|-> [latex|text|debug]
 **The version in `Cargo.toml` is part of the interface.** ZubuvZpevnikUi
 runs this tool (as a git submodule, built next to the app) and checks
 `chords_converter --version` against a minimum. Raise the minor version
-(`0.5.0` → `0.6.0`) in the same commit as any change to the command line,
-the exit codes, the `Saving output to:` lines or the `suggest --json`
+(`0.6.0` → `0.7.0`) in the same commit as any change to the command line,
+the exit codes, the `Saving output to:` lines or the `shrink --json`
 format, and tell the UI (a note in its `docs/`).
 
 `out/` and `target/` are gitignored. `README.md` is the user-facing manual
@@ -264,7 +264,7 @@ songbook shows all of it):
 - lines are as short as the site split them, not joined into whole phrases;
 - repeated choruses are printed in full (`--tidy` makes an identical one
   `\insertchorus`), and repeated verses keep their chords. `\insertchorus*`
-  and `\chordsoff` are a person's decision, which `suggest` proposes;
+  and `\chordsoff` are a person's decision, which `shrink` proposes;
 - without `--tidy`, chords sit where the site put them, often a letter inside
   the syllable (`D\[E]o` for `\[E]Do`);
 - `met`, `cap`, `key` are left commented out when the site did not give them,
@@ -272,7 +272,7 @@ songbook shows all of it):
 
 The plan for closing these is `docs/PLAN.md`: the printer does what is always
 right (tier 1), `--tidy`/`tidy` makes the safe rewrites (tier 2), and
-`suggest`/`apply` propose the changes a person decides on (tier 3).
+`shrink`/`apply` propose the changes a person decides on (tier 3).
 
 ## Checking a song
 
