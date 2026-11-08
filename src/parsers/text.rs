@@ -825,8 +825,8 @@ fn is_chord_body(s: &str) -> bool {
 /// `mi`, `sus4`, `add9`, `dim`, `aug`, `7b5`, `#9`, `m7(b5)`. Longer pieces
 /// first, so `min` is read before `mi` and `m`.
 const QUALITY_PIECES: [&str; 23] = [
-    "maj", "Maj", "min", "dim", "aug", "sus", "add", "mi", "m", "M", "o", "#", "b", "+", "-",
-    "(", ")", ".", "*", "°", "Δ", "ø", "∅",
+    "maj", "Maj", "min", "dim", "aug", "sus", "add", "mi", "m", "M", "o", "#", "b", "+", "-", "(",
+    ")", ".", "*", "°", "Δ", "ø", "∅",
 ];
 
 /// Whether a quality is made of the known pieces and digits, and nothing
@@ -1248,10 +1248,19 @@ mod tests {
 
     #[test]
     fn a_sus_chord_on_a_or_e_is_not_a_czech_flat() {
-        for (written, root, quality) in [("Asus2", "A", "sus2"), ("Esus4", "E", "sus4"), ("As7", "As", "7"), ("Es", "Es", "")] {
+        for (written, root, quality) in [
+            ("Asus2", "A", "sus2"),
+            ("Esus4", "E", "sus4"),
+            ("As7", "As", "7"),
+            ("Es", "Es", ""),
+        ] {
             let chord = parse_chord(written);
             assert_eq!(chord.root, root, "{written}");
-            assert_eq!(chord.modifier.as_deref().unwrap_or(""), quality, "{written}");
+            assert_eq!(
+                chord.modifier.as_deref().unwrap_or(""),
+                quality,
+                "{written}"
+            );
         }
     }
 
@@ -1260,7 +1269,8 @@ mod tests {
         for chord in [
             "C", "Am", "Ami", "Amin", "Cmaj7", "CMaj7", "CM7", "Dsus4", "Dsus2", "Cadd9", "Bdim",
             "Bdim7", "Caug", "C+", "C7b5", "C7#9", "Bm7b5", "Bm7(b5)", "Co7", "C°", "Cø", "CΔ7",
-            "Cmmaj7", "Cmadd9", "C6add9", "C13", "Fis", "Hmi7", "Es", "As7", "C5", "G/B", "Asus2/E",
+            "Cmmaj7", "Cmadd9", "C6add9", "C13", "Fis", "Hmi7", "Es", "As7", "C5", "G/B",
+            "Asus2/E",
         ] {
             assert!(is_chord_token(chord), "{chord}");
         }
