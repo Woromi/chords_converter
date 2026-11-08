@@ -197,6 +197,14 @@ site's label: the refrain of She's Always A Woman came from the site as a
   `\insertchorus` reprints it whole; `\insertchorus*` prints the one-line
   reminder `R: first line...` (chords off, trailing punctuation dropped, `...`
   added). A following `\rep{n}` joins the reminder line: `\insertchorus* \rep{2}`.
+- **A chorus sung again in full without chords** (a one-line chorus has
+  nothing to shorten) is `\insertchorus[][\chordsoff]`, not a
+  `\beginchorus\chordsoff` copy. The second bracket runs before the chorus's
+  own text; the first stays empty for the latest chorus (`[2]` for chorus 2).
+  `\insertchorus*[][\chordson]` is the reminder with its chords, and
+  `\insertchorus*[][\rolesoff]` the reminder without the `\role` label.
+  Labels stay by default; `\rolesoff` is for a two-voice label
+  (`\role{Ty}{Arjen}`), which the one-voice reminder would cut to `Ty`.
 - **Two different choruses** are numbered: `\beginchorus[1]`,
   `\beginchorus[2]`, repeated by `\insertchorus*[1]`. They print `R1:`/`R2:`.
   A chorus that comes back with new words is still the same chorus: no number.
@@ -209,6 +217,12 @@ site's label: the refrain of She's Always A Woman came from the site as a
   always shows its chords.** Spread the chorded verses evenly, so every plain
   verse has a chorded one next to it. Both switches also work mid-part, on a
   line of their own (`\chordson` turns chords back on).
+- **Setup for a whole part goes on its opening line**, right after
+  `\beginverse` (or `\beginchorus[2]`, …): `\chordsoff`,
+  `\chordsoffonsmallpage`, `\memorize`, `\replay`, `\usechords{…}`,
+  `\copychords{…}`, `\transpose{n}`, `\smalleronsmallpage`,
+  `\multivoiceoff`. On a line of its own a switch means one in the middle
+  of the part. `\iflargepaper` and `\textnote` are not setup.
 - `^` replays the chords memorised from the previous part of the same type
   (each part type has its own memory); `\usechords{verse}` borrows another
   type's.

@@ -42,19 +42,40 @@ cargo run -- tidy Song.tex -o -                                          # print
 The file is rewritten only when something changed, and through a file beside
 it, so it is never left half written.
 
+- **Setup on lines of its own moves onto the opening line**:
+  `\beginverse` followed by a line `\chordsoff` becomes
+  `\beginverse\chordsoff`. Only the lines before the first sung one move,
+  and only part setup (`\chordsoff`, `\chordsoffonsmallpage`, `\memorize`,
+  `\replay`, `\usechords`, `\copychords`, `\transpose`,
+  `\smalleronsmallpage`, `\multivoiceoff`), never a line with a comment. TeX
+  reads both the same; on the songbook 140 lines moved, all typeset pixel
+  for pixel the same.
 - **A chorus typed out again becomes `\insertchorus`**, when it is the same
-  as the chorus right before it, word for word and chord for chord, with the
-  same number and the same switches after `\beginchorus`. `\insertchorus`
+  as the latest chorus, word for word and chord for chord, with the same
+  number and the same switches after `\beginchorus`. `\insertchorus`
   reprints that chorus exactly: 43 songbook songs tidied this way typeset
   pixel for pixel the same, on A4 and A5. A song whose choruses sit inside
   `\iflargepaper … \fi`, or replay chords (`^`, `\memorize`), is left alone.
+- **A copy that only turns the chords off becomes
+  `\insertchorus[][\chordsoff]`** (or `[][\chordsoffonsmallpage]`, `[2][…]`
+  for chorus 2): the second bracket runs inside the reprint. A copy showing
+  chords the latest chorus hides stays typed out. On the songbook: 21
+  copies (Hallelujah, Yomara Nildar, …), all typeset the same. It needs a
+  songbook whose `\insertchorus` takes the second bracket.
 - **A reminder typed out by hand becomes `\insertchorus*`**: a chorus of one
-  sung line, chords off, ending in `...`, the rest commented out, with the
+  sung line, chords off (`\chordsoff` on the opening line or on a line of
+  its own before the words), ending in `...`, the rest commented out, with the
   words of the latest chorus's first line. That is what `\insertchorus*`
   prints. A reminder in words of its own, without the dots, depending on
   the paper (`\iflargepaper`), or showing chords stays as written. So does
-  one that a full `\insertchorus` after it reprints. On the songbook this
-  replaced 18 reminders in 10 songs, all typeset pixel for pixel the same
+  one that a full `\insertchorus` after it reprints. Words count as the
+  reminder prints them, the main voice of a `\multivoice`. One typed without
+  a two-voice label ending the first line (`\role{Ty}{Arjen}`, which the
+  one-voice reminder would cut to `Ty`) becomes
+  `\insertchorus*[][\rolesoff]` (Connect the Dots). One typed without a
+  one-voice label stays: the label may have been forgotten, and putting it
+  back shows on the page. On the songbook this
+  replaced 57 reminders in 34 songs, all typeset pixel for pixel the same
   (with the songbook's `\insertchorus*` dropping a trailing chord before its
   dots, as it now does).
 - **A chord drawn inside its syllable moves to the syllable's start**:

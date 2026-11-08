@@ -25,7 +25,14 @@ pub struct Change {
 /// changes nothing. The changes are reported in the order they were made.
 /// A move stays on its line, so the line numbers hold for both rounds.
 pub fn tidy(text: &str) -> (String, Vec<Change>) {
-    // A reminder typed by hand is the first thing to go: the chord moves
+    // Setup switches go onto the opening line first, so every rule after
+    // finds them in one place.
+    let mut setups = setup_to_opening_line(text, &scan(text));
+    setups.sort_by_key(|c| c.span.start);
+    let set_up = apply(text, &setups);
+    let text = set_up.as_str();
+
+    // A reminder typed by hand is the next thing to go: the chord moves
     // and the chorus comparison after it see the song as it will stay.
     let mut reminders = hand_written_reminders(text, &scan(text));
     reminders.sort_by_key(|c| c.span.start);
@@ -40,8 +47,8 @@ pub fn tidy(text: &str) -> (String, Vec<Change>) {
     choruses.sort_by_key(|c| c.span.start);
     let tidied = apply(&moved, &choruses);
 
-    // Removing a reminder takes its lines out; the later changes are
-    // reported on the lines of the song as it was given.
+    // Moving a switch up or removing a reminder takes lines out; the later
+    // changes are reported on the lines of the song as it was given.
     let mut later = moves;
     later.extend(choruses);
     {
@@ -50,14 +57,31 @@ pub fn tidy(text: &str) -> (String, Vec<Change>) {
             change.line = original(change.line);
         }
     }
-    let mut changes = reminders;
+    later.extend(reminders);
+    {
+        let original = text_before(&setups);
+        for change in &mut later {
+            change.line = original(change.line);
+        }
+    }
+    // A part that became an `\insertchorus` took its moved setup with it:
+    // the move is not news.
+    let mut changes: Vec<Change> = setups
+        .into_iter()
+        .filter(|setup| {
+            !later
+                .iter()
+                .any(|c| c.line == setup.line && c.replacement.starts_with("\\insertchorus"))
+        })
+        .collect();
     changes.extend(later);
     changes.sort_by_key(|c| c.line);
     (tidied, changes)
 }
 
-/// Maps a line of the song after `reminders` were applied back to the line
-/// it was on before.
+/// Maps a line of the song after `reminders` (or any changes that fold the
+/// lines after their own into it) were applied back to the line it was on
+/// before.
 fn text_before(reminders: &[Change]) -> impl Fn(usize) -> usize + '_ {
     move |line| {
         let mut shift = 0;
@@ -90,9 +114,15 @@ pub fn apply(text: &str, changes: &[Change]) -> String {
 /// `\insertchorus`, which reprints the chorus exactly as it was. (Checked by
 /// typesetting both: the pages are identical, on A4 and A5.)
 ///
+/// A copy that differs only in turning its chords off (`\chordsoff` or
+/// `\chordsoffonsmallpage` after `\beginchorus`) becomes
+/// `\insertchorus[][\chordsoff]`: the second bracket runs inside the
+/// reprint, before the chorus's own switches. Those can only turn more
+/// chords off, so a copy showing chords the first one hid stays typed out.
+///
 /// `\insertchorus` reprints the *latest* chorus, number and all, so a
-/// chorus is only replaced when it matches the one right before it, with
-/// the same number and the same switches after `\beginchorus`. Whatever
+/// chorus is only replaced when it matches the one before it (the last one
+/// not replaced), with the same number. Whatever
 /// could make the latest chorus differ from what the song shows is reason
 /// enough to leave the song alone: a chorus inside `\iflargepaper … \fi`
 /// (which chorus is the latest depends on the paper), and chord memory
@@ -110,40 +140,75 @@ fn repeated_choruses(text: &str, scan: &Scan) -> Vec<Change> {
     }
 
     let mut changes = Vec::new();
-    for pair in choruses.windows(2) {
-        let (latest, repeat) = (pair[0], pair[1]);
-        if !same_chorus(text, latest, repeat) {
+    let mut latest: Option<&PartSpan> = None;
+    for &repeat in &choruses {
+        let Some((latest, setup)) =
+            latest.and_then(|latest| Some((latest, reprint_setup(text, latest, repeat)?)))
+        else {
+            latest = Some(repeat);
             continue;
-        }
-        let replacement = match repeat.number {
-            Some(n) => format!("\\insertchorus[{n}]"),
-            None => "\\insertchorus".to_string(),
+        };
+        let number = repeat.number.map(|n| n.to_string()).unwrap_or_default();
+        let replacement = match (&setup, repeat.number) {
+            (None, Some(n)) => format!("\\insertchorus[{n}]"),
+            (None, None) => "\\insertchorus".to_string(),
+            (Some(setup), _) => format!("\\insertchorus[{number}][{setup}]"),
+        };
+        let description = match &setup {
+            None => format!(
+                "the chorus is the same as the one on line {}: \\insertchorus",
+                latest.line
+            ),
+            Some(_) => format!(
+                "the chorus is the one on line {} with its chords off: {replacement}",
+                latest.line
+            ),
         };
         changes.push(Change {
             span: repeat.span.clone(),
             replacement,
             line: repeat.line,
-            description: format!(
-                "the chorus is the same as the one on line {}: \\insertchorus",
-                latest.line
-            ),
+            description,
             removed_lines: text[repeat.span.clone()].matches('\n').count(),
         });
     }
     changes
 }
 
-/// Whether `repeat` prints exactly what `latest` does.
-fn same_chorus(text: &str, latest: &PartSpan, repeat: &PartSpan) -> bool {
+/// Whether `repeat` prints what `latest` does, and if so, the setup a
+/// reprint needs for it: `None` when it doesn't; `Some(None)` when it is
+/// the same chorus, switches and all; `Some(Some(setup))` when the repeat
+/// turns chords off that `latest` shows.
+fn reprint_setup(text: &str, latest: &PartSpan, repeat: &PartSpan) -> Option<Option<String>> {
     let rest = |range: &Range<usize>| text[range.clone()].trim().to_string();
-    latest.number == repeat.number
-        && rest(&latest.opening_rest) == rest(&repeat.opening_rest)
+    let same_text = latest.number == repeat.number
         // Whatever stands behind `\endchorus` (`\rep{2}`) is not part of
         // what `\insertchorus` would print.
         && rest(&repeat.closing_rest).is_empty()
         && !uses_chord_memory(&text[latest.body.clone()])
         && !uses_chord_memory(&text[repeat.body.clone()])
-        && lines(&text[latest.body.clone()]) == lines(&text[repeat.body.clone()])
+        && lines(&text[latest.body.clone()]) == lines(&text[repeat.body.clone()]);
+    if !same_text {
+        return None;
+    }
+    let (was, now) = (rest(&latest.opening_rest), rest(&repeat.opening_rest));
+    if was == now {
+        return Some(None);
+    }
+    // Which chords each turns off: on large paper, on small paper.
+    let off = |switches: &str| -> Option<(bool, bool)> {
+        if !is_switch(switches) {
+            return None;
+        }
+        let large = super::fit::has_word(switches, "chordsoff");
+        Some((large, large || switches.contains("\\chordsoffonsmallpage")))
+    };
+    let (was_large, was_small) = off(&was)?;
+    let (now_large, now_small) = off(&now)?;
+    if (was_large && !now_large) || (was_small && !now_small) {
+        return None;
+    }
+    Some(Some(now))
 }
 
 /// A part's lines with the spaces inside each one evened out. A line break
@@ -169,27 +234,40 @@ fn uses_chord_memory(body: &str) -> bool {
 ///
 /// Only when nothing printed changes:
 /// - the reminder has one line sung, ending in `...` (which the reminder
-///   adds; a line typed without it would gain it), and shows no chords;
+///   adds; a line typed without it would gain it), and shows no chords
+///   (`\chordsoff` on the opening line or on a line of its own before the
+///   words);
 /// - nothing in it depends on the paper (`\iflargepaper`): the reminder
 ///   macro has one line for all;
 /// - its words are the first line's of the chorus that is the latest at that
 ///   point, which may be an earlier hand-written reminder, since every
-///   `\beginchorus` becomes the latest; one with words of its own stays;
+///   `\beginchorus` becomes the latest; one with words of its own stays.
+///   Words as the reminder prints them: the main voice of a `\multivoice`,
+///   the `\role` label apart. A reminder typed without the two-voice label
+///   (`\role{Ty}{Arjen}`) the first line ends in becomes
+///   `\insertchorus*[][\rolesoff]`, and so does a bare `\insertchorus*`
+///   that reprinted it; one typed without a one-voice label stays;
 /// - it has the latest chorus's number;
 /// - no full `\insertchorus` reprints it before the next chorus: that would
 ///   go back to the chorus before;
 /// - no chorus is conditional.
 fn hand_written_reminders(text: &str, scan: &Scan) -> Vec<Change> {
-    use super::fit::{chord_names, has_word, lyric_words};
+    use super::fit::{chord_names, has_word};
     let choruses: Vec<&PartSpan> = scan.parts.iter().filter(|p| p.kind == "chorus").collect();
     if choruses.iter().any(|p| p.conditional) || scan.chorus_repeats.iter().any(|(_, c)| *c) {
         return Vec::new();
     }
-    let sung = |part: &PartSpan| -> Vec<String> {
+    let code_lines = |part: &PartSpan| -> Vec<String> {
         text[part.body.clone()]
             .lines()
             .map(|l| code_of(l).trim().to_string())
             .filter(|l| !l.is_empty())
+            .collect()
+    };
+    let sung = |part: &PartSpan| -> Vec<String> {
+        code_lines(part)
+            .into_iter()
+            .filter(|l| !is_switch(l))
             .collect()
     };
 
@@ -197,45 +275,181 @@ fn hand_written_reminders(text: &str, scan: &Scan) -> Vec<Change> {
     let mut latest: Option<&PartSpan> = None;
     for (k, &part) in choruses.iter().enumerate() {
         let lines = sung(part);
-        let chords_off = has_word(code_of(&text[part.opening_rest.clone()]), "chordsoff");
+        // The switch may stand on the opening line or on a line of its own
+        // before the words; one after them would be lost with the part.
+        let body = code_lines(part);
+        let switches_first = body.iter().take_while(|l| is_switch(l)).count() + 1 == body.len();
+        let chords_off = has_word(code_of(&text[part.opening_rest.clone()]), "chordsoff")
+            || body
+                .iter()
+                .any(|l| is_switch(l) && has_word(l, "chordsoff"));
         let next_chorus = choruses.get(k + 1).map_or(text.len(), |p| p.span.start);
         let reprinted = scan.chorus_repeats.iter().any(|(span, _)| {
             span.start >= part.span.end
                 && span.start < next_chorus
                 && !text[span.clone()].starts_with("\\insertchorus*")
         });
-        let matches_latest = latest.is_some_and(|latest| {
+        let setup = latest.and_then(|latest| {
             let first = sung(latest).into_iter().next().unwrap_or_default();
-            latest.number == part.number
+            let fits = latest.number == part.number
                 && lines.len() == 1
+                && switches_first
                 && ends_in_dots(&lines[0])
                 && !lines[0].contains("\\if")
                 && (chords_off || chord_names(&lines[0]).is_empty())
-                && !lyric_words(&first).is_empty()
-                && lyric_words(&first) == lyric_words(&lines[0])
                 && !reprinted
-                && rest_is_empty(text, part)
+                && rest_is_empty(text, part);
+            if !fits {
+                return None;
+            }
+            let (words, role) = as_reminded(&first);
+            let (typed, typed_role) = as_reminded(&lines[0]);
+            if words.is_empty() || words != typed {
+                return None;
+            }
+            match (role, typed_role) {
+                (role, typed_role) if role == typed_role => Some(""),
+                // Typed without a label for two voices: with the second
+                // voice off the reminder would name only the first singer
+                // of a line both sing, so the label is left out on purpose.
+                // A one-voice label left out is likelier forgotten, and
+                // putting it back changes the page: a person's call.
+                (Some(role), None) if two_voice_role(&role) => Some("\\rolesoff"),
+                _ => None,
+            }
         });
-        if !matches_latest {
+        let Some(setup) = setup else {
             latest = Some(part);
             continue;
+        };
+        let number = part.number.map(|n| n.to_string()).unwrap_or_default();
+        let star = |setup: &str| match (setup, part.number) {
+            ("", Some(n)) => format!("\\insertchorus*[{n}]"),
+            ("", None) => "\\insertchorus*".to_string(),
+            (setup, _) => format!("\\insertchorus*[{number}][{setup}]"),
+        };
+        // An `\insertchorus*` after it reprinted this reminder, label
+        // hidden; once it reprints the chorus instead, it needs the switch
+        // too. One that brings its own setup is left to a person.
+        let mut followers = Vec::new();
+        if !setup.is_empty() {
+            let mut own_setup = false;
+            for (span, _) in &scan.chorus_repeats {
+                if span.start < part.span.end || span.start >= next_chorus {
+                    continue;
+                }
+                let written = &text[span.clone()];
+                let brackets = written.trim_start_matches("\\insertchorus*");
+                let its_number = brackets
+                    .strip_prefix('[')
+                    .and_then(|b| b.split(']').next())
+                    .filter(|n| !n.is_empty());
+                if its_number != part.number.map(|n| n.to_string()).as_deref() {
+                    continue;
+                }
+                if brackets.matches('[').count() > 1 {
+                    own_setup = true;
+                }
+                let line = text[..span.start].matches('\n').count() + 1;
+                followers.push(Change {
+                    span: span.clone(),
+                    replacement: star(setup),
+                    line,
+                    description: format!(
+                        "the reminder after it hides the label too: {}",
+                        star(setup)
+                    ),
+                    removed_lines: 0,
+                });
+            }
+            if own_setup {
+                latest = Some(part);
+                continue;
+            }
         }
         let latest = latest.unwrap();
         changes.push(Change {
             span: part.span.clone(),
-            replacement: match part.number {
-                Some(n) => format!("\\insertchorus*[{n}]"),
-                None => "\\insertchorus*".to_string(),
-            },
+            replacement: star(setup),
             line: part.line,
             description: format!(
-                "the chorus is a reminder of the one on line {}, typed out: \\insertchorus*",
-                latest.line
+                "the chorus is a reminder of the one on line {}, typed out: {}",
+                latest.line,
+                star(setup)
             ),
             removed_lines: text[part.span.clone()].matches('\n').count(),
         });
+        changes.extend(followers);
     }
     changes
+}
+
+/// What `\insertchorus*` prints of a line, as words to compare, and the
+/// `\role` label it keeps at the end. The second voice is off in a
+/// reminder, so `\multivoice{main}{second}` counts as its main voice.
+fn as_reminded(line: &str) -> (String, Option<String>) {
+    let mut main = String::new();
+    let mut rest = line;
+    while let Some(at) = rest.find("\\multivoice") {
+        let after = &rest[at + "\\multivoice".len()..];
+        main.push_str(&rest[..at]);
+        // `\multivoiceoff` and the like are other commands.
+        let groups = Some(after)
+            .filter(|a| !a.starts_with(|c: char| c.is_ascii_alphabetic()))
+            .and_then(|a| group(a.trim_start()))
+            .and_then(|(first, a)| group(a.trim_start()).map(|(_, a)| (first, a)));
+        match groups {
+            Some((first, after)) => {
+                main.push_str(first);
+                rest = after;
+            }
+            None => {
+                main.push_str("\\multivoice");
+                rest = after;
+            }
+        }
+    }
+    main.push_str(rest);
+    let role = main
+        .match_indices("\\role")
+        .find(|(at, _)| !main[at + 5..].starts_with(|c: char| c.is_ascii_alphabetic()))
+        .map(|(at, _)| at);
+    match role {
+        Some(at) => (
+            super::fit::lyric_words(&main[..at]),
+            Some(main[at..].split_whitespace().collect::<Vec<_>>().join(" ")),
+        ),
+        None => (super::fit::lyric_words(&main), None),
+    }
+}
+
+/// Whether a `\role{…}{…}` label names a second voice.
+fn two_voice_role(role: &str) -> bool {
+    role.strip_prefix("\\role")
+        .and_then(|r| group(r.trim_start()))
+        .and_then(|(_, r)| group(r.trim_start()))
+        .is_some()
+}
+
+/// The inside of the `{…}` group `s` starts with, and what follows it.
+fn group(s: &str) -> Option<(&str, &str)> {
+    if !s.starts_with('{') {
+        return None;
+    }
+    let mut depth = 0;
+    for (i, c) in s.char_indices() {
+        match c {
+            '{' => depth += 1,
+            '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some((&s[1..i], &s[i + 1..]));
+                }
+            }
+            _ => {}
+        }
+    }
+    None
 }
 
 /// Whether a line's words end in dots: the chords and the `\role` label
@@ -253,6 +467,106 @@ fn ends_in_dots(line: &str) -> bool {
         }
     }
     words.ends_with("...") || words.ends_with('…')
+}
+
+/// The commands that set a part up for all of it, wherever they stand
+/// before its first line: chord switches, chord memory, transposition, type
+/// size, the second voice. (`\iflargepaper` opens lines of its own and
+/// `\textnote` prints, so neither is one.)
+const SETUP: [&str; 9] = [
+    "chordsoff",
+    "chordsoffonsmallpage",
+    "memorize",
+    "replay",
+    "usechords",
+    "copychords",
+    "transpose",
+    "smalleronsmallpage",
+    "multivoiceoff",
+];
+
+/// Whether a line is made of setup commands alone, each with its `[…]` and
+/// `{…}` arguments.
+fn is_setup_line(code: &str) -> bool {
+    let mut rest = code.trim();
+    if rest.is_empty() {
+        return false;
+    }
+    while !rest.is_empty() {
+        let Some(after) = rest.strip_prefix('\\') else {
+            return false;
+        };
+        let name_len = after.bytes().take_while(u8::is_ascii_alphabetic).count();
+        if !SETUP.contains(&&after[..name_len]) {
+            return false;
+        }
+        rest = &after[name_len..];
+        for (open, close) in [('[', ']'), ('{', '}')] {
+            if let Some(inner) = rest.strip_prefix(open) {
+                match inner.find(close) {
+                    Some(end) if !inner[..end].contains(['[', '{']) => rest = &inner[end + 1..],
+                    _ => return false,
+                }
+            }
+        }
+        rest = rest.trim_start();
+    }
+    true
+}
+
+/// Setup commands on lines of their own right after `\beginverse` (and the
+/// other openings) join the opening line: `\beginverse\chordsoff`. That is
+/// where most songs have them, and where the spec writes them; a switch on
+/// a line of its own then means one in the middle of a part, which works
+/// from there on. TeX reads both the same: a line end after a control word
+/// is skipped like a space.
+///
+/// Only the lines between the opening line and the first one that is not
+/// setup move, and none with a comment, nor onto an opening line that has
+/// one.
+fn setup_to_opening_line(text: &str, scan: &Scan) -> Vec<Change> {
+    let mut changes = Vec::new();
+    for part in &scan.parts {
+        let opening = &text[part.opening_rest.clone()];
+        if code_of(opening) != opening {
+            continue;
+        }
+        let mut commands = String::new();
+        let mut end = None;
+        let mut at = part.body.start;
+        let mut moved = 0;
+        for raw in text[part.body.clone()].split_inclusive('\n') {
+            let line = raw.trim_end_matches(['\n', '\r']);
+            if code_of(line) != line || !is_setup_line(line) {
+                break;
+            }
+            commands.push_str(line.trim());
+            end = Some(at + line.len());
+            at += raw.len();
+            moved += 1;
+        }
+        let Some(end) = end else {
+            continue;
+        };
+        let start = part.opening_rest.start + opening.trim_end().len();
+        changes.push(Change {
+            span: start..end,
+            replacement: commands.clone(),
+            line: part.line,
+            description: format!("setup moved onto the opening line: {commands}"),
+            removed_lines: moved,
+        });
+    }
+    changes
+}
+
+/// Whether a line is a chord switch and nothing else (`\chordsoff` on a
+/// line of its own inside the part): setup, not a sung line.
+fn is_switch(code: &str) -> bool {
+    code.replace("\\chordsoffonsmallpage", "")
+        .replace("\\chordsoff", "")
+        .trim()
+        .is_empty()
 }
 
 /// Whether the opening line holds nothing but chord switches: anything else
@@ -537,7 +851,7 @@ mod tests {
         let (tidied, _) = tidy(&numbered);
         assert!(tidied.contains("\\insertchorus[1]\n"), "{tidied}");
 
-        for (first, second) in [("[1]", ""), ("", "[2]"), ("", "\\chordsoff")] {
+        for (first, second) in [("[1]", ""), ("", "[2]"), ("\\chordsoff", "")] {
             let text = song(&[chorus(first, BODY, ""), chorus(second, BODY, "")]);
             assert!(tidy(&text).1.is_empty(), "{first} {second}");
         }
@@ -546,6 +860,120 @@ mod tests {
             chorus("\\chordsoff", BODY, ""),
         ]);
         assert_eq!(tidy(&both).1.len(), 1);
+    }
+
+    #[test]
+    fn a_copy_with_its_chords_off_becomes_insertchorus_with_the_switch() {
+        let off = song(&[
+            chorus("", BODY, ""),
+            VERSE.into(),
+            chorus("\\chordsoff", BODY, ""),
+        ]);
+        let (tidied, changes) = tidy(&off);
+        assert_eq!(changes.len(), 1, "{changes:?}");
+        assert!(
+            tidied.contains("\n\\insertchorus[][\\chordsoff]\n"),
+            "{tidied}"
+        );
+        assert!(tidy(&tidied).1.is_empty());
+
+        let numbered = song(&[
+            chorus("[2]", BODY, ""),
+            chorus("[2]\\chordsoffonsmallpage", BODY, ""),
+        ]);
+        assert!(
+            tidy(&numbered)
+                .0
+                .contains("\\insertchorus[2][\\chordsoffonsmallpage]")
+        );
+
+        // Hidden on small paper, then hidden on both: the reprint's own
+        // \chordsoffonsmallpage adds nothing to \chordsoff.
+        let more = song(&[
+            chorus("\\chordsoffonsmallpage", BODY, ""),
+            chorus("\\chordsoff", BODY, ""),
+        ]);
+        assert!(tidy(&more).0.contains("\\insertchorus[][\\chordsoff]"));
+
+        // Every later copy is compared with the chorus, not with a reprint.
+        let twice = song(&[
+            chorus("", BODY, ""),
+            chorus("\\chordsoff", BODY, ""),
+            chorus("\\chordsoff", BODY, ""),
+        ]);
+        assert_eq!(
+            tidy(&twice)
+                .0
+                .matches("\\insertchorus[][\\chordsoff]")
+                .count(),
+            2
+        );
+
+        // Chords the first one hides can't be brought back, and other
+        // commands don't count as switches.
+        for (first, second) in [
+            ("\\chordsoff", "\\chordsoffonsmallpage"),
+            ("", "\\chordsoff\\textnote{x}"),
+        ] {
+            let text = song(&[chorus(first, BODY, ""), chorus(second, BODY, "")]);
+            assert!(tidy(&text).1.is_empty(), "{first} {second}");
+        }
+    }
+
+    #[test]
+    fn setup_on_lines_of_its_own_joins_the_opening_line() {
+        let text = "\\beginverse\n    \\chordsoff\n    \\memorize[bridge]\n    \\[C]Hello\n    \\chordson\n    there\n\\endverse\n";
+        let (tidied, changes) = tidy(text);
+        assert_eq!(
+            tidied,
+            "\\beginverse\\chordsoff\\memorize[bridge]\n    \\[C]Hello\n    \\chordson\n    there\n\\endverse\n"
+        );
+        assert_eq!(changes.len(), 1);
+        assert!(tidy(&tidied).1.is_empty());
+
+        // Onto what is there already; a switch after the words stays.
+        let text = "\\beginchorus[2]\\chordsoffonsmallpage \n    \\transpose{-2}\n    Hi\n    \\chordsoff\n    Ho\n\\endchorus\n";
+        assert_eq!(
+            tidy(text).0,
+            "\\beginchorus[2]\\chordsoffonsmallpage\\transpose{-2}\n    Hi\n    \\chordsoff\n    Ho\n\\endchorus\n"
+        );
+
+        // A comment, a command that is not setup, or a conditional stays.
+        for text in [
+            "\\beginverse % why\n    \\chordsoff\n    Hi\n\\endverse\n",
+            "\\beginverse\n    \\chordsoff % why\n    Hi\n\\endverse\n",
+            "\\beginverse\n    \\textnote{x}\n    Hi\n\\endverse\n",
+            "\\beginverse\n    \\iflargepaper\\chordsoff\\fi\n    Hi\n\\endverse\n",
+            "\\beginverse\n    \\chordsoffx\n    Hi\n\\endverse\n",
+        ] {
+            assert!(tidy(text).1.is_empty(), "{text}");
+        }
+    }
+
+    #[test]
+    fn lines_are_reported_on_the_song_as_given() {
+        // The setup line goes, so the chorus after it moves up a line in
+        // the tidied song; it is still reported where it was.
+        let text = song(&[
+            "\\beginverse\n    \\chordsoff\n    \\[C]A verse\n\\endverse\n\n".into(),
+            chorus("", BODY, ""),
+            chorus("", BODY, ""),
+        ]);
+        let (_, changes) = tidy(&text);
+        let chorus_line = text.lines().position(|l| l == "\\beginchorus").unwrap() + 1;
+        let second = text
+            .lines()
+            .enumerate()
+            .filter(|(_, l)| *l == "\\beginchorus")
+            .nth(1)
+            .unwrap()
+            .0
+            + 1;
+        assert!(chorus_line < second);
+        assert_eq!(
+            changes.iter().map(|c| c.line).collect::<Vec<_>>(),
+            vec![5, second]
+        );
     }
 
     #[test]
@@ -734,6 +1162,77 @@ mod tests {
             ])
         );
         assert!(tidy(&tidied).1.is_empty());
+    }
+
+    #[test]
+    fn a_reminder_with_chordsoff_on_a_line_of_its_own_becomes_insertchorus_star() {
+        // Sea of Machines: the switch on its own line is not a sung line.
+        let full = "    \\[E]I've seen the \\[B]future in a \\[F#m]dream \\[C#m] \\role{Prophet}\n    \\[A]I've seen a \\[E]sea\n";
+        let typed = "    \\chordsoff\n    \\[E]I've seen the \\[B]future in a \\[F#m]dream... \\[C#m] \\role{Prophet}\n    %\\[A]I've seen a \\[E]sea\n";
+        let text = song(&[chorus("", full, ""), VERSE.into(), chorus("", typed, "")]);
+        let (tidied, changes) = tidy(&text);
+        assert_eq!(changes.len(), 1, "{changes:?}");
+        assert_eq!(
+            tidied,
+            song(&[
+                chorus("", full, ""),
+                VERSE.into(),
+                "\\insertchorus*\n\n".into()
+            ])
+        );
+        // After the words, the switch would be lost with the part: it stays.
+        let late = "    \\[E]I've seen the \\[B]future in a \\[F#m]dream...\n    \\chordsoff\n";
+        let text = song(&[chorus("", full, ""), VERSE.into(), chorus("", late, "")]);
+        assert!(
+            tidy(&text)
+                .1
+                .iter()
+                .all(|c| !c.description.contains("reminder"))
+        );
+    }
+
+    #[test]
+    fn a_reminder_of_the_main_voice_without_the_label_hides_the_label() {
+        // Connect the Dots.
+        let full = "    We all \\[C#m]know \\multivoice{}{We all} \\[E]{\\multivoice{}{know,}} \\role{Ty}{Arjen}\n    \\[D]We are dying\n";
+        let typed = "    We all \\[C#m]know...\n";
+        let text = song(&[
+            chorus("", full, ""),
+            VERSE.into(),
+            chorus("\\chordsoff", typed, ""),
+            VERSE.into(),
+            "\\insertchorus*\n\n".into(),
+        ]);
+        let (tidied, changes) = tidy(&text);
+        assert_eq!(changes.len(), 2, "{changes:?}");
+        assert_eq!(
+            tidied,
+            song(&[
+                chorus("", full, ""),
+                VERSE.into(),
+                "\\insertchorus*[][\\rolesoff]\n\n".into(),
+                VERSE.into(),
+                "\\insertchorus*[][\\rolesoff]\n\n".into(),
+            ])
+        );
+        assert!(tidy(&tidied).1.is_empty());
+
+        // With the label typed, nothing to hide; with another label, or the
+        // second voice's words, it is a reminder of its own.
+        let same = "    We all \\[C#m]know... \\role{Ty}{Arjen}\n";
+        let text = song(&[chorus("", full, ""), chorus("\\chordsoff", same, "")]);
+        assert!(tidy(&text).0.contains("\n\\insertchorus*\n"));
+        // A one-voice label left out may be a slip: left to a person.
+        let one = "    We all \\[C#m]know \\role{Ty}\n    \\[D]We are dying\n";
+        let text = song(&[chorus("", one, ""), chorus("\\chordsoff", typed, "")]);
+        assert!(tidy(&text).1.is_empty());
+        for other in [
+            "    We all know... \\role{Arjen}\n",
+            "    We all know We all...\n",
+        ] {
+            let text = song(&[chorus("", full, ""), chorus("\\chordsoff", other, "")]);
+            assert!(tidy(&text).1.is_empty(), "{other}");
+        }
     }
 
     #[test]

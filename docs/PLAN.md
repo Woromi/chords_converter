@@ -107,7 +107,9 @@ part of the identical-output check `\insertchorus` has.
          `refren.lua` stopped keeping a trailing chord's space before the dots
          (fixed there, uncommitted). The 3 others (no dots: Hallelujah,
          Yomara Nildar; `\iflargepaper` inside: Mississippi Blues) are now
-         left alone by rule.
+         left alone by rule. A `\chordsoff` on a line of its own (Sea of
+         Machines, Basket Case) was first read as a sung line; once it was
+         not, 25 more songs gained reminders, all pixel-identical.
    - [x] Idempotent: moves first, then choruses on the moved text; a second
          pass over every tidied songbook song changes nothing.
 5. [x] **Tier 3 `suggest`/`apply`** (`src/tex/fit.rs`, `src/tex/measure.rs`):
@@ -146,18 +148,17 @@ part of the identical-output check `\insertchorus` has.
    proposal there is a false positive to examine. (`tidy` on finished songs
    does find real work: import leftovers nobody fixed by hand.)
 
-## Waiting on ZubuvZpevnik
+## Done once ZubuvZpevnik had it
 
-- **A full chorus reprint with chords off**, e.g. `\insertchorus[\chordsoff]`.
-  A one-line chorus (Hallelujah, Yomara Nildar) has nothing to shorten, so
-  it is sung again in full without chords, and today that has to be typed
-  out by hand as a `\beginchorus\chordsoff` copy. Once the songbook has the
-  macro, add a tidy rule: a chorus identical in words and chords to the
-  latest one, with `\chordsoff`, becomes the chords-off reprint. Check it
-  pixel-identical like the other chorus rules. The spelling is the
-  songbook's to choose: `[...]` already takes the chorus number
-  (`\insertchorus[2]`), so the option needs a form that doesn't collide
-  with it, and ZubuvZpevnikWeb re-implements the macro too.
+- **A full chorus reprint with chords off.** The songbook spelled it
+  `\insertchorus[n][setup]` (`[]` for the latest chorus). Tidy rule: a copy
+  identical in words and chords to the latest chorus, turning only more
+  chords off, becomes `\insertchorus[][\chordsoff]`. Gate: 21 songbook
+  copies, pixel-identical on A4 and A5. With it, setup on lines of its own
+  joins the opening line (140 lines, pixel-identical), so every rule finds
+  the switches in one place. Still open: `suggest` could offer
+  `\insertchorus` → `\insertchorus[][\chordsoffonsmallpage]` as a chords-off
+  lever.
 
 ## Notes for the UI session
 - Exit codes changed: 1 when the song could not be read or written (it used to

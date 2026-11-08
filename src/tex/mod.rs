@@ -130,10 +130,15 @@ pub fn scan(text: &str) -> Scan {
                 if rest.starts_with('*') {
                     end += 1;
                 }
-                if code[end..].starts_with('[')
-                    && let Some(close) = code[end..].find(']')
-                {
-                    end += close + 1;
+                // `[n]`, then `[setup]` run inside the reprint.
+                for _ in 0..2 {
+                    if code[end..].starts_with('[')
+                        && let Some(close) = code[end..].find(']')
+                    {
+                        end += close + 1;
+                    } else {
+                        break;
+                    }
                 }
                 scan.chorus_repeats
                     .push((absolute..line_start + end, depth > 0));
@@ -239,6 +244,16 @@ mod tests {
         );
         // The commented-out \beginverse is no part.
         assert_eq!(scan.parts.len(), 3);
+    }
+
+    #[test]
+    fn a_repeat_with_setup_spans_both_brackets() {
+        let text = "\\insertchorus[][\\chordsoff] \\rep{2}\n";
+        let scan = scan(text);
+        assert_eq!(
+            &text[scan.chorus_repeats[0].0.clone()],
+            "\\insertchorus[][\\chordsoff]"
+        );
     }
 
     /// Every song in the songbook next door scans, and each part re-slices to
