@@ -3,6 +3,7 @@ use heck::ToUpperCamelCase;
 use reqwest::header::{
     ACCEPT, ACCEPT_LANGUAGE, COOKIE, HeaderMap, HeaderValue, UPGRADE_INSECURE_REQUESTS,
 };
+use std::collections::BTreeMap;
 use std::env;
 use std::fs;
 use std::io::{Read, Write};
@@ -391,16 +392,24 @@ fn tidy_file(file: &Path, output: &Output) -> Result<(), String> {
     let (tidied, changes) = tex::tidy::tidy(&text);
     report_changes(&file.display().to_string(), &changes);
 
+    write_back(file, &tidied, !changes.is_empty(), output)
+}
+
+/// Writes a changed song where it was asked to go: standard output, another
+/// file, or back over the song itself. The song itself is rewritten only
+/// when something changed, and through a file beside it that then takes its
+/// place, so it is never left half written.
+fn write_back(file: &Path, text: &str, changed: bool, output: &Output) -> Result<(), String> {
     match output {
-        Output::Stdout => write_stdout(&tidied),
-        Output::File(path) => fs::write(path, tidied)
+        Output::Stdout => write_stdout(text),
+        Output::File(path) => fs::write(path, text)
             .map_err(|e| format!("Failed to write '{}': {}", path.display(), e)),
-        Output::Default if changes.is_empty() => Ok(()),
+        Output::Default if !changed => Ok(()),
         Output::Default => {
             let mut temporary = file.as_os_str().to_owned();
             temporary.push(".tidy");
             let temporary = PathBuf::from(temporary);
-            fs::write(&temporary, tidied)
+            fs::write(&temporary, text)
                 .and_then(|_| fs::rename(&temporary, file))
                 .map_err(|e| {
                     let _ = fs::remove_file(&temporary);
@@ -410,11 +419,228 @@ fn tidy_file(file: &Path, output: &Output) -> Result<(), String> {
     }
 }
 
+/// The pages a song may take on a paper: one, or two facing A5 pages for a
+/// song marked `pap={…a5x2}`, which is meant to open across a spread.
+fn pages_allowed(text: &str, paper: &str) -> u32 {
+    let marked_spread = text
+        .lines()
+        .map(tex::code_of)
+        .filter_map(|code| code.find("pap={").map(|at| code[at..].to_string()))
+        .any(|pap| {
+            pap.split(['{', '}', ','])
+                .any(|p| p.trim() == format!("{paper}x2"))
+        });
+    if marked_spread { 2 } else { 1 }
+}
+
+/// Lists the proposals for a song, and with `--measure` says whether it fits.
+///
+/// `--fit a4` offers the changes that act on every paper. `--fit a5` does
+/// too while the song still overflows A4 (it overflows A5 then as well), and
+/// the changes for small paper only once A4 fits. Without `--measure` there
+/// is no telling, so both stages are listed, every-paper changes first.
+fn suggest(
+    file: &Path,
+    fit: Option<&str>,
+    measure: bool,
+    songbook: Option<&Path>,
+    json: bool,
+) -> Result<(), String> {
+    use tex::fit::Stage;
+    let text = fs::read_to_string(file)
+        .map_err(|e| format!("Failed to read file '{}': {}", file.display(), e))?;
+    let all = tex::fit::proposals(&text);
+
+    let default_songbook = PathBuf::from("../ZubuvZpevnik");
+    let songbook = songbook.unwrap_or(&default_songbook);
+    let mut measured: BTreeMap<String, tex::measure::Measured> = BTreeMap::new();
+    let mut measure_on = |paper: &str| -> Result<tex::measure::Measured, String> {
+        let m = tex::measure::measure(songbook, &text, &[paper])?
+            .remove(paper)
+            .ok_or_else(|| format!("No measurement for {}", paper))?;
+        measured.insert(paper.to_string(), m.clone());
+        Ok(m)
+    };
+
+    let mut stages = vec![Stage::AllPapers, Stage::SmallPaper];
+    let mut fits = None;
+    let mut note = String::new();
+    match (fit, measure) {
+        (Some("a4"), false) => stages = vec![Stage::AllPapers],
+        (Some("a4"), true) => {
+            stages = vec![Stage::AllPapers];
+            if measure_on("a4")?.fits(1) {
+                fits = Some(true);
+            }
+        }
+        (Some("a5"), true) => {
+            if !measure_on("a4")?.fits(1) {
+                stages = vec![Stage::AllPapers];
+                note = "It does not fit A4 yet, and A5 not either then: first the changes for every paper.".into();
+            } else if measure_on("a5")?.fits(pages_allowed(&text, "a5")) {
+                fits = Some(true);
+            } else {
+                stages = vec![Stage::SmallPaper];
+                note = "It fits A4: the changes for small paper only.".into();
+            }
+        }
+        (Some("a5"), false) | (None, _) => {
+            if measure {
+                measure_on("a4")?;
+                measure_on("a5")?;
+            }
+        }
+        (Some(other), _) => return Err(format!("Unknown paper '{}': a4 or a5.", other)),
+    }
+    if fits == Some(true) {
+        stages.clear();
+    } else if fit.is_some() && measure {
+        fits = Some(false);
+    }
+    let shown: Vec<&tex::fit::Proposal> =
+        all.iter().filter(|p| stages.contains(&p.stage)).collect();
+
+    if json {
+        let proposals: Vec<serde_json::Value> = shown
+            .iter()
+            .map(|p| {
+                serde_json::json!({
+                    "id": p.id,
+                    "kind": p.kind,
+                    "stage": p.stage as u8,
+                    "line": p.line,
+                    "description": p.description,
+                    "gain_lines": p.gain_lines,
+                    "edits": p.edits.iter().map(|e| serde_json::json!({
+                        "start": e.span.start,
+                        "end": e.span.end,
+                        "replacement": e.replacement,
+                    })).collect::<Vec<_>>(),
+                })
+            })
+            .collect();
+        let measured: serde_json::Map<String, serde_json::Value> = measured
+            .iter()
+            .map(|(paper, m)| {
+                (
+                    paper.clone(),
+                    serde_json::json!({
+                        "pages": m.pages,
+                        "wraps": m.wraps.iter().map(|w| serde_json::json!({
+                            "line": w.line,
+                            "in_chorus": w.in_chorus,
+                        })).collect::<Vec<_>>(),
+                        "fits": m.fits(pages_allowed(&text, paper)),
+                    }),
+                )
+            })
+            .collect();
+        let out = serde_json::json!({
+            "file": file.display().to_string(),
+            "fit": fit,
+            "fits": fits,
+            "measured": measured,
+            "note": note,
+            "proposals": proposals,
+        });
+        return write_stdout(&format!("{}\n", out));
+    }
+
+    let mut out = format!("{}\n", file.display());
+    for (paper, m) in &measured {
+        let allowed = pages_allowed(&text, paper);
+        let pages = if m.pages == 1 {
+            "1 page".to_string()
+        } else {
+            format!("{} pages", m.pages)
+        };
+        let verdict = if m.fits(allowed) {
+            "fits"
+        } else {
+            "does not fit"
+        };
+        out.push_str(&format!(
+            "  {}: {}, {}",
+            paper.to_uppercase(),
+            pages,
+            verdict
+        ));
+        if !m.wraps.is_empty() {
+            let lines: Vec<String> = m
+                .wraps
+                .iter()
+                .map(|w| match w.line {
+                    Some(line) => format!("line {}", line),
+                    None => "a line of a chorus".to_string(),
+                })
+                .collect();
+            out.push_str(&format!(
+                "; too wide: {} (re-break by hand)",
+                lines.join(", ")
+            ));
+        }
+        out.push('\n');
+    }
+    if !note.is_empty() {
+        out.push_str(&format!("  {}\n", note));
+    }
+    if fits == Some(true) {
+        let paper = fit.unwrap_or("a5");
+        out.push_str(&format!(
+            "  It fits {}. Record it in the songbook with:\n    scripts/checkpaper.py --measure {} --write <song>\n",
+            paper.to_uppercase(),
+            paper
+        ));
+    } else if shown.is_empty() {
+        out.push_str("  Nothing left to propose.\n");
+    } else {
+        out.push_str("  Proposals, best first:\n");
+        for p in &shown {
+            out.push_str(&format!(
+                "    {:<28} line {:>3}  {} (~{} lines)\n",
+                p.id, p.line, p.description, p.gain_lines
+            ));
+        }
+        out.push_str(&format!(
+            "  Apply one with: chords_converter apply {} --id <id>, then ask again.\n",
+            file.display()
+        ));
+    }
+    write_stdout(&out)
+}
+
+/// Applies the chosen proposals to a song. The proposals are found afresh
+/// in the file as it is now, so an id from an older `suggest` that no longer
+/// applies is refused rather than applied to the wrong bytes.
+fn apply_file(file: &Path, ids: &[String], output: &Output) -> Result<(), String> {
+    let text = fs::read_to_string(file)
+        .map_err(|e| format!("Failed to read file '{}': {}", file.display(), e))?;
+    let all = tex::fit::proposals(&text);
+    let mut chosen = Vec::new();
+    for id in ids {
+        let proposal = all.iter().find(|p| &p.id == id).ok_or_else(|| {
+            format!(
+                "No proposal '{}' for '{}' (ask again with suggest).",
+                id,
+                file.display()
+            )
+        })?;
+        chosen.push(proposal);
+    }
+    let changed = tex::fit::apply(&text, &chosen)?;
+    for p in &chosen {
+        eprintln!("{}:{}: {}", file.display(), p.line, p.description);
+    }
+    write_back(file, &changed, true, output)
+}
+
 const USAGE: &str = "\
 Usage:
   chords_converter <SOURCE> [FORMAT]
   chords_converter convert <SOURCE> [--format FORMAT] [--tidy] [-o FILE | -o -]
   chords_converter tidy <SONG.tex> [-o FILE | -o -]
+  chords_converter suggest <SONG.tex> [--fit a4|a5] [--measure] [--songbook DIR] [--json]
+  chords_converter apply <SONG.tex> --id ID [--id ID ...] [-o FILE | -o -]
 
 SOURCE   a URL of a supported website, a local text file (chords over
          lyrics), a page saved from a browser, or - to paste the song
@@ -428,7 +654,15 @@ tidy improves a LaTeX song without changing anything else in it: a chorus
 typed out again is replaced by \\insertchorus, and a chord drawn inside its
 syllable moves to the syllable's start. It rewrites the file unless
 -o is given, and lists every change on stderr. convert --tidy does the same
-to the draft.";
+to the draft.
+
+suggest lists changes to what a song prints, best first, for a person to
+accept or reject: chords hidden where they repeat ones already shown, a
+chorus shortened to its reminder line, a smaller type on small paper.
+--fit a4|a5 keeps to the ones that help fit that paper; --measure typesets
+the song with the songbook's own scripts/checkpaper.py (the songbook is
+../ZubuvZpevnik unless --songbook says otherwise) and says whether it fits.
+apply makes the chosen ones; apply one, then ask again.";
 
 /// What the command line asks for.
 #[derive(Debug, PartialEq)]
@@ -444,6 +678,18 @@ enum Command {
         file: PathBuf,
         output: Output,
     },
+    Suggest {
+        file: PathBuf,
+        fit: Option<String>,
+        measure: bool,
+        songbook: Option<PathBuf>,
+        json: bool,
+    },
+    Apply {
+        file: PathBuf,
+        ids: Vec<String>,
+        output: Output,
+    },
 }
 
 /// Reads the command line. The first form, `<SOURCE> [FORMAT]`, is the one
@@ -457,6 +703,8 @@ fn parse_args(args: &[String]) -> Result<Command, String> {
         "-h" | "--help" | "help" => Ok(Command::Help),
         "convert" => parse_convert(&args[1..]),
         "tidy" => parse_tidy(&args[1..]),
+        "suggest" => parse_suggest(&args[1..]),
+        "apply" => parse_apply(&args[1..]),
         _ => match args {
             [source] => Ok(Command::Convert {
                 source: source.clone(),
@@ -516,6 +764,80 @@ fn parse_convert(args: &[String]) -> Result<Command, String> {
     })
 }
 
+fn parse_suggest(args: &[String]) -> Result<Command, String> {
+    let mut file = None;
+    let mut fit = None;
+    let mut measure = false;
+    let mut songbook = None;
+    let mut json = false;
+    let mut args = args.iter();
+    while let Some(arg) = args.next() {
+        let mut value = || {
+            args.next()
+                .cloned()
+                .ok_or_else(|| format!("{} needs a value.", arg))
+        };
+        match arg.as_str() {
+            "--fit" => {
+                let paper = value()?.to_lowercase();
+                if paper != "a4" && paper != "a5" {
+                    return Err(format!("--fit takes a4 or a5, not '{}'.", paper));
+                }
+                fit = Some(paper);
+            }
+            "--measure" => measure = true,
+            "--songbook" => songbook = Some(PathBuf::from(value()?)),
+            "--json" => json = true,
+            option if option.starts_with('-') => {
+                return Err(format!("Unknown option '{}'.", option));
+            }
+            _ if file.is_some() => return Err(format!("Unexpected argument '{}'.", arg)),
+            _ => file = Some(PathBuf::from(arg)),
+        }
+    }
+    let file = file.ok_or_else(|| "suggest needs a song file.".to_string())?;
+    Ok(Command::Suggest {
+        file,
+        fit,
+        measure,
+        songbook,
+        json,
+    })
+}
+
+fn parse_apply(args: &[String]) -> Result<Command, String> {
+    let mut file = None;
+    let mut ids = Vec::new();
+    let mut output = Output::Default;
+    let mut args = args.iter();
+    while let Some(arg) = args.next() {
+        let mut value = || {
+            args.next()
+                .cloned()
+                .ok_or_else(|| format!("{} needs a value.", arg))
+        };
+        match arg.as_str() {
+            "--id" => ids.push(value()?),
+            "--output" | "-o" => {
+                output = match value()?.as_str() {
+                    "-" => Output::Stdout,
+                    path => Output::File(PathBuf::from(path)),
+                }
+            }
+            option if option.starts_with('-') => {
+                return Err(format!("Unknown option '{}'.", option));
+            }
+            _ if file.is_some() => return Err(format!("Unexpected argument '{}'.", arg)),
+            _ => file = Some(PathBuf::from(arg)),
+        }
+    }
+    let file = file.ok_or_else(|| "apply needs a song file.".to_string())?;
+    if ids.is_empty() {
+        return Err("apply needs at least one --id.".to_string());
+    }
+    Ok(Command::Apply { file, ids, output })
+}
+
 fn parse_tidy(args: &[String]) -> Result<Command, String> {
     let mut file = None;
     let mut output = Output::Default;
@@ -557,6 +879,14 @@ async fn main() {
             return;
         }
         Command::Tidy { file, output } => tidy_file(&file, &output),
+        Command::Suggest {
+            file,
+            fit,
+            measure,
+            songbook,
+            json,
+        } => suggest(&file, fit.as_deref(), measure, songbook.as_deref(), json),
+        Command::Apply { file, ids, output } => apply_file(&file, &ids, &output),
         Command::Convert {
             source,
             format,
@@ -727,5 +1057,55 @@ mod tests {
             })
         );
         assert!(parse_args(&args(&["convert", "page.html", "--tidy", "-f", "text"])).is_err());
+    }
+
+    #[test]
+    fn suggest_and_apply_read_their_options() {
+        assert_eq!(
+            parse_args(&args(&[
+                "suggest",
+                "S.tex",
+                "--fit",
+                "A5",
+                "--measure",
+                "--json"
+            ])),
+            Ok(Command::Suggest {
+                file: "S.tex".into(),
+                fit: Some("a5".to_string()),
+                measure: true,
+                songbook: None,
+                json: true,
+            })
+        );
+        assert!(parse_args(&args(&["suggest", "S.tex", "--fit", "letter"])).is_err());
+        assert!(parse_args(&args(&["suggest"])).is_err());
+
+        assert_eq!(
+            parse_args(&args(&[
+                "apply",
+                "S.tex",
+                "--id",
+                "chordsoff@10",
+                "--id",
+                "x@2",
+                "-o",
+                "-"
+            ])),
+            Ok(Command::Apply {
+                file: "S.tex".into(),
+                ids: vec!["chordsoff@10".to_string(), "x@2".to_string()],
+                output: Output::Stdout,
+            })
+        );
+        assert!(parse_args(&args(&["apply", "S.tex"])).is_err());
+    }
+
+    #[test]
+    fn a_song_marked_for_a_spread_may_take_two_a5_pages() {
+        assert_eq!(pages_allowed("    pap={a4,a5x2},\n", "a5"), 2);
+        assert_eq!(pages_allowed("    pap={a4,a5},\n", "a5"), 1);
+        assert_eq!(pages_allowed("    % pap={a5x2},\n", "a5"), 1);
+        assert_eq!(pages_allowed("    pap={a4,a5x2},\n", "a4"), 1);
     }
 }

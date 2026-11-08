@@ -4,6 +4,8 @@
 //! stay as it was. So a song is *scanned*, every part found together with
 //! the bytes it spans, and a change is a replacement of exactly those bytes.
 
+pub mod fit;
+pub mod measure;
 pub mod tidy;
 
 use std::ops::Range;
