@@ -10,6 +10,9 @@ pub struct Song {
     pub meter: Option<String>,
     pub language: Option<String>,
     pub tuning: Option<String>,
+    /// The fret the capo is on. `Some(0)` is the source saying there is no
+    /// capo, which leaves the song without a `cap` key; `None` is the source
+    /// saying nothing, which leaves it for a person to fill in.
     pub capo: Option<u8>,
     /// `Label: value` pairs the source provided that have no field of their
     /// own (year, album, writers, ...), kept in the order they were read.

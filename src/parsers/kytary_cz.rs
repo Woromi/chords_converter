@@ -97,7 +97,8 @@ fn parse_language(document: &Html) -> Option<String> {
 }
 
 /// Reads the fret the capo is on. The site writes it into its own menu, as
-/// "Kapodastr — pražec 2"; a capo on the nut is no capo at all.
+/// "Kapodastr — pražec 2"; a capo on the nut is no capo at all, which the
+/// site has said (`Some(0)`).
 fn parse_capo(document: &Html) -> Option<u8> {
     let items = Selector::parse(".overflow-item, .toolbar-group .group-content").ok()?;
     let value = Selector::parse(".overflow-value, .toolbar-value").ok()?;
@@ -117,7 +118,7 @@ fn parse_capo(document: &Html) -> Option<u8> {
             .take_while(char::is_ascii_digit)
             .collect();
         if let Ok(fret) = fret.parse::<u8>() {
-            return (fret > 0).then_some(fret);
+            return Some(fret);
         }
     }
 
@@ -379,7 +380,7 @@ mod tests {
     #[test]
     fn the_fret_the_capo_is_on_is_read_off_the_menu() {
         assert_eq!(parse("pražec 2", "").capo, Some(2));
-        assert_eq!(parse("pražec 0", "").capo, None);
+        assert_eq!(parse("pražec 0", "").capo, Some(0));
     }
 
     #[test]

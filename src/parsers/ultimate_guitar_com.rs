@@ -96,11 +96,32 @@ impl SongParser for UltimateGuitarComParser {
             tuning: field("/tab_view/meta/tuning/name")
                 .or_else(|| field("/tab_view/meta/tuning/value"))
                 .or(notes.tuning),
-            capo: capo.or(notes.capo),
+            // A fret the header or the remark names; else the site saying
+            // there is none.
+            capo: capo
+                .or(notes.capo)
+                .or(says_no_capo(html_content).then_some(0)),
             extra,
             parts: parse_body(&strip_markup(body)),
         }
     }
+}
+
+/// Whether the page says outright that the song needs no capo. The header's
+/// data leaves the capo out then, which could as well be a tab that never
+/// said; but the page's schema.org summary spells it: "Capo: no capo".
+fn says_no_capo(html_content: &str) -> bool {
+    let document = Html::parse_document(html_content);
+    let Ok(scripts) = Selector::parse(r#"script[type="application/ld+json"]"#) else {
+        return false;
+    };
+    document.select(&scripts).any(|script| {
+        let json: String = script.text().collect();
+        serde_json::from_str::<Value>(&json)
+            .ok()
+            .and_then(|v| v.get("text").and_then(Value::as_str).map(str::to_lowercase))
+            .is_some_and(|text| text.contains("capo: no capo"))
+    })
 }
 
 /// Everyone the song is credited to, as the site prints them above the sheet.
@@ -435,6 +456,20 @@ mod tests {
         ));
 
         assert_eq!(song.capo, Some(3));
+    }
+
+    /// The header's data leaves the capo out when there is none; the page's
+    /// schema.org summary says so outright, and only then is it no capo
+    /// rather than unknown.
+    #[test]
+    fn no_capo_is_read_from_the_summary() {
+        let summary = r#"<script type="application/ld+json">{"@type": "MusicComposition", "text": "Difficulty: Intermediate Tuning: Eb Ab Db Gb Bb Eb Key: D#m Capo: no capo"}</script>"#;
+        let with = page("[Verse]\r\n[tab][ch]C[/ch]\r\nand away we go[/tab]")
+            .replace("<body>", &format!("<head>{summary}</head><body>"));
+        assert_eq!(parse_page(&with).capo, Some(0));
+
+        let without = page("[Verse]\r\n[tab][ch]C[/ch]\r\nand away we go[/tab]");
+        assert_eq!(parse_page(&without).capo, None);
     }
 
     /// "N.C." names no chord to play, and the site wraps it in `[ch]` like any

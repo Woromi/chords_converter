@@ -236,6 +236,10 @@ know it failed.
 | `ultimate-guitar.com` | key, capo, tuning, a tempo or time signature the tabber's remark names, the remark itself |
 | `guitartuna.com` | key, tempo, time signature, tuning, capo |
 
+A site that says the song needs no capo (kytary's "pražec 0", blivnik's
+`[CAPO:0]`, Ultimate Guitar's "Capo: no capo") leaves the draft without a
+`cap` key; one that says nothing leaves `% cap={},` for a person to fill in.
+
 However differently the five sites store a song, underneath it is the same
 "chords over lyrics" layout — so each parser only undoes what its site did to
 it (its markup, its brackets, its JSON) and hands the sheet to the text parser,

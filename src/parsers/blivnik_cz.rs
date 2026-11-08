@@ -127,10 +127,11 @@ impl Head {
     }
 }
 
-/// Reads the fret out of a `[CAPO:2]` line, ignoring a capo on the nut.
+/// Reads the fret out of a `[CAPO:2]` line; `[CAPO:0]` is the site saying
+/// there is no capo (`Some(0)`).
 fn capo_of(line: &str) -> Option<u8> {
     let inner = line.strip_prefix("[CAPO:")?.strip_suffix(']')?;
-    inner.trim().parse().ok().filter(|fret| *fret > 0)
+    inner.trim().parse().ok()
 }
 
 /// Reads a `[Ami](X02210)` chord diagram as "Ami (X02210)".
@@ -282,7 +283,7 @@ mod tests {
 
     #[test]
     fn a_capo_on_the_nut_is_no_capo() {
-        assert_eq!(parse("[CAPO:0]\n[TEXT:]\n Ave").capo, None);
+        assert_eq!(parse("[CAPO:0]\n[TEXT:]\n Ave").capo, Some(0));
     }
 
     #[test]

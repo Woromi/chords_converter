@@ -31,8 +31,11 @@ impl SongPrinter for LatexPrinter {
             Some(key) => writeln!(writer, "    key={{{}}},", escape_key(key))?,
             None => writeln!(writer, "    % key={{}},")?,
         }
+        // No capo, as the site said, is no key at all; a capo the site never
+        // mentioned is left for a person to fill in.
         match &song.capo {
-            None | Some(0) => writeln!(writer, "    % cap={{}},")?,
+            None => writeln!(writer, "    % cap={{}},")?,
+            Some(0) => {}
             Some(capo) => writeln!(writer, "    cap={{{}}},", capo)?,
         }
         writeln!(writer, "    src={{{}}},", escape(&song.source_website))?;
@@ -801,9 +804,15 @@ mod tests {
 
     #[test]
     fn a_missing_meter_or_capo_is_left_as_a_comment() {
-        let out = header(&song(None, Some(0)));
+        let out = header(&song(None, None));
         assert!(out.contains("    % met={},\n"));
         assert!(out.contains("    % cap={},\n"));
+    }
+
+    #[test]
+    fn no_capo_as_the_site_said_is_no_cap_key() {
+        let out = header(&song(None, Some(0)));
+        assert!(!out.contains("cap="), "{out}");
     }
 
     #[test]
