@@ -42,6 +42,10 @@ cargo run -- tidy Song.tex -o -                                          # print
 The file is rewritten only when something changed, and through a file beside
 it, so it is never left half written.
 
+- **Runs of spaces become one, and spaces ending a line go.** TeX reads
+  them that way already. Indentation, comments (which may hold text lined
+  up by hand) and the space of a control space `\ ` are kept. On the
+  songbook: 152 lines in 49 songs, all typeset pixel for pixel the same.
 - **Setup on lines of its own moves onto the opening line**:
   `\beginverse` followed by a line `\chordsoff` becomes
   `\beginverse\chordsoff`. Only the lines before the first sung one move,

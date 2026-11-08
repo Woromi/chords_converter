@@ -25,7 +25,13 @@ pub struct Change {
 /// changes nothing. The changes are reported in the order they were made.
 /// A move stays on its line, so the line numbers hold for both rounds.
 pub fn tidy(text: &str) -> (String, Vec<Change>) {
-    // Setup switches go onto the opening line first, so every rule after
+    // Spaces first: no rule after makes a run of them, and none of them
+    // takes or adds a line, so the lines need no mapping back.
+    let spaces = collapse_spaces(text);
+    let spaced = apply(text, &spaces);
+    let text = spaced.as_str();
+
+    // Setup switches go onto the opening line next, so every rule after
     // finds them in one place.
     let mut setups = setup_to_opening_line(text, &scan(text));
     setups.sort_by_key(|c| c.span.start);
@@ -66,17 +72,98 @@ pub fn tidy(text: &str) -> (String, Vec<Change>) {
     }
     // A part that became an `\insertchorus` took its moved setup with it:
     // the move is not news.
-    let mut changes: Vec<Change> = setups
-        .into_iter()
-        .filter(|setup| {
-            !later
-                .iter()
-                .any(|c| c.line == setup.line && c.replacement.starts_with("\\insertchorus"))
-        })
-        .collect();
+    let mut changes: Vec<Change> = spaces;
+    changes.extend(setups.into_iter().filter(|setup| {
+        !later
+            .iter()
+            .any(|c| c.line == setup.line && c.replacement.starts_with("\\insertchorus"))
+    }));
     changes.extend(later);
     changes.sort_by_key(|c| c.line);
     (tidied, changes)
+}
+
+/// Runs of spaces become one space, and spaces ending a line go: TeX reads
+/// a run of spaces as one and drops the ones at the end of a line, so the
+/// song prints the same. Left as they are:
+/// - the indentation, which shows the structure (and `latexindent` sets);
+/// - comments, which may hold text lined up by hand (tablature, notes);
+/// - the space after a lone backslash, `\ `, which is part of the command;
+///   only the spaces after it go.
+///
+/// One change for the whole song, reported on the first line it touches.
+fn collapse_spaces(text: &str) -> Vec<Change> {
+    let mut out = String::with_capacity(text.len());
+    let mut lines = Vec::new();
+    for (index, raw) in text.split_inclusive('\n').enumerate() {
+        let body = raw.trim_end_matches(['\n', '\r']);
+        let ending = &raw[body.len()..];
+        let indent = body.len() - body.trim_start_matches([' ', '\t']).len();
+        let code = code_of(body);
+        let comment = &body[code.len()..];
+        let mut line = String::from(&body[..indent]);
+        let mut backslashes = 0;
+        let mut in_run = false;
+        for c in code[indent.min(code.len())..].chars() {
+            if c == ' ' || c == '\t' {
+                // A control space: the backslash takes this one.
+                if !in_run && backslashes % 2 == 1 {
+                    line.push(' ');
+                    backslashes = 0;
+                    in_run = true;
+                    continue;
+                }
+                in_run = true;
+                backslashes = 0;
+                continue;
+            }
+            if in_run {
+                if !line.ends_with(' ') || line.len() == indent {
+                    line.push(' ');
+                }
+                in_run = false;
+            }
+            backslashes = if c == '\\' { backslashes + 1 } else { 0 };
+            line.push(c);
+        }
+        // Before a comment one space stays; at the end of the line none.
+        if in_run && !comment.is_empty() && !line.ends_with(' ') && line.len() > indent {
+            line.push(' ');
+        }
+        line.push_str(comment);
+        if line != body {
+            lines.push(index + 1);
+        }
+        out.push_str(&line);
+        out.push_str(ending);
+    }
+    let Some(&first) = lines.first() else {
+        return Vec::new();
+    };
+    // One span, from the first line that changes to the end of the last.
+    let start = text
+        .split_inclusive('\n')
+        .take(first - 1)
+        .map(str::len)
+        .sum();
+    let end_in_text = text.len()
+        - text
+            .split_inclusive('\n')
+            .skip(*lines.last().unwrap())
+            .map(str::len)
+            .sum::<usize>();
+    let end_in_out = out.len() - (text.len() - end_in_text);
+    vec![Change {
+        span: start..end_in_text,
+        replacement: out[start..end_in_out].to_string(),
+        line: first,
+        description: format!(
+            "spaces collapsed on {} line{}",
+            lines.len(),
+            if lines.len() == 1 { "" } else { "s" }
+        ),
+        removed_lines: 0,
+    }]
 }
 
 /// Maps a line of the song after `reminders` (or any changes that fold the
@@ -817,7 +904,8 @@ mod tests {
     fn spaces_inside_a_line_do_not_matter_but_lines_do() {
         let spaced = "  \\[C]Hello   \\[G]there,\n        \\[F]hello\n";
         let text = song(&[chorus("", BODY, ""), chorus("", spaced, "")]);
-        assert_eq!(tidy(&text).1.len(), 1);
+        let (tidied, _) = tidy(&text);
+        assert!(tidied.contains("\n\\insertchorus\n"), "{tidied}");
 
         let joined = "    \\[C]Hello \\[G]there, \\[F]hello\n";
         let text = song(&[chorus("", BODY, ""), chorus("", joined, "")]);
@@ -860,6 +948,21 @@ mod tests {
             chorus("\\chordsoff", BODY, ""),
         ]);
         assert_eq!(tidy(&both).1.len(), 1);
+    }
+
+    #[test]
+    fn runs_of_spaces_become_one() {
+        let text = "\\beginverse\n    \\[C]Hello   \\[G]there,  \n\t\\[F]a~b \t c   % keep   this\n    \\lrep\\   x \\rrep\\ \n    %\\[A]a   b\n\\endverse\n";
+        let (tidied, changes) = tidy(text);
+        assert_eq!(
+            tidied,
+            "\\beginverse\n    \\[C]Hello \\[G]there,\n\t\\[F]a~b c % keep   this\n    \\lrep\\ x \\rrep\\ \n    %\\[A]a   b\n\\endverse\n"
+        );
+        assert_eq!(changes.len(), 1);
+        assert_eq!(changes[0].line, 2);
+        assert!(tidy(&tidied).1.is_empty());
+        // `\\` is a backslash pair, not a control space.
+        assert_eq!(tidy("x\\\\   y\n").0, "x\\\\ y\n");
     }
 
     #[test]
