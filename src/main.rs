@@ -511,6 +511,8 @@ fn suggest(
                     "line": p.line,
                     "description": p.description,
                     "gain_lines": p.gain_lines,
+                    "score": p.score,
+                    "grade": p.grade(),
                     "edits": p.edits.iter().map(|e| serde_json::json!({
                         "start": e.span.start,
                         "end": e.span.end,
@@ -594,11 +596,23 @@ fn suggest(
     } else if shown.is_empty() {
         out.push_str("  Nothing left to propose.\n");
     } else {
-        out.push_str("  Proposals, best first:\n");
+        out.push_str("  Proposals by paper, the most readable first (score 0-100):\n");
+        let mut stage = None;
         for p in &shown {
+            if stage != Some(p.stage) {
+                stage = Some(p.stage);
+                out.push_str(match p.stage {
+                    Stage::AllPapers => "   for every paper:\n",
+                    Stage::SmallPaper => "   for small paper only:\n",
+                });
+            }
             out.push_str(&format!(
-                "    {:<28} line {:>3}  {} (~{} lines)\n",
-                p.id, p.line, p.description, p.gain_lines
+                "    {:>3} {:<11} {:<28} {} (~{} lines)\n",
+                p.score,
+                p.grade(),
+                p.id,
+                p.description,
+                p.gain_lines
             ));
         }
         out.push_str(&format!(
@@ -657,9 +671,12 @@ syllable moves to the syllable's start. It rewrites the file unless
 -o is given, and lists every change on stderr. convert --tidy does the same
 to the draft.
 
-suggest lists changes to what a song prints, best first, for a person to
-accept or reject: chords hidden where they repeat ones already shown, a
-chorus shortened to its reminder line, a smaller type on small paper.
+suggest lists changes to what a song prints, for a person to accept or
+reject, rated by how readable they leave the song (0-100: good, fair,
+poor, last resort) and most readable first: a chorus shortened to its
+reminder line, chords hidden where they repeat ones already shown (best
+alternating with chorded parts, and late in the song rather than early),
+a smaller type on small paper.
 --fit a4|a5 keeps to the ones that help fit that paper; --measure typesets
 the song with the songbook's own scripts/checkpaper.py (the songbook is
 ../ZubuvZpevnik unless --songbook says otherwise) and says whether it fits.

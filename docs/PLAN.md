@@ -58,7 +58,8 @@ chords_converter apply   <song.tex> --id ID… [-o FILE|-]      # tier 3, chosen
    `\chordsoffonsmallpage` on parts reprinting chords already shown, then
    `\smalleronsmallpage` (CLAUDE.md "Fitting the page").
 
-Proposals are ranked by a cheap estimate (printed lines saved). `--measure`
+Proposals are rated by the readability they leave (see the README), then
+by a cheap estimate of the printed lines saved. `--measure`
 asks the songbook's `scripts/checkpaper.py --measure a4|a5` for the real page
 count, never with `--write`. The UI may use its own preview instead.
 `checkpaper.py --measure` only takes songs under `songs/chords/`, so a draft
@@ -141,6 +142,13 @@ part of the identical-output check `\insertchorus` has.
          stops. Forever And One gets the two `\insertchorus*` the hand edit
          chose. Africa runs out of proposals at 2 A4 pages: what the hand
          edit did there (joined lines, transposition) is not a lever here.
+   - [x] Rated for readability (0.3.0, decided with the user 2026-11-08):
+         a score and a grade per proposal, listed by score within a stage.
+         A chorus reminder (80) reads better than chords off (60), which
+         reads better than a smaller type (20). Chords off loses 15 next to a
+         part already plain and up to 5 for being early, so taking the first
+         proposal each time alternates chorded and plain parts from the end
+         (Brhlík a sojka: verses 8, 6, 4, then the 3rd only as "poor").
    - [ ] Re-breaking lines (CLAUDE.md lever 2) stays a human judgement;
          `suggest` names the too-wide lines.
 6. **Corpus checks (`printer-gap`).** Drafts move closer to the finished

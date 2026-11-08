@@ -4,10 +4,20 @@
 //!
 //! Fitting a page has two stages (decided with the user). First the song is
 //! made to fit A4 with changes that act on every paper, since a song that
-//! overflows A4 overflows A5 too: `\chordsoff` on parts that reprint chords
-//! already shown, then `\insertchorus*` for a chorus sung again. Once A4
-//! fits, the changes act on small paper only: `\chordsoffonsmallpage`, then
+//! overflows A4 overflows A5 too: `\insertchorus*` for a chorus sung again,
+//! `\chordsoff` on parts that reprint chords already shown. Once A4 fits,
+//! the changes act on small paper only: `\chordsoffonsmallpage`, then
 //! `\smalleronsmallpage` as the last resort (CLAUDE.md "Fitting the page").
+//!
+//! Within a stage, proposals are rated by how readable they leave the song
+//! (decided with the user), not by the space they save alone. Best is all
+//! the words and all the chords where they are sung. A chorus shortened to
+//! its reminder line costs a glance back to the chorus. A part without its
+//! chords costs more: the words are read in one place and the chords in
+//! another, line after line. Where chords go off matters too: chorded and
+//! plain parts should alternate (on, off, on, off rather than on, on, off,
+//! off), and the chords stay towards the beginning. A smaller type costs the
+//! whole song, so it comes last.
 
 use super::{PartSpan, Scan, code_of, scan};
 use std::ops::Range;
@@ -40,10 +50,47 @@ pub struct Proposal {
     pub description: String,
     /// Printed lines it saves, estimated: a chord row counts as a line.
     pub gain_lines: usize,
+    /// How readable the song stays, 0–100, higher is better.
+    pub score: u8,
     pub edits: Vec<Edit>,
     /// The part whose chords it switches off, and how, for checking that
     /// the proposals chosen together still keep chords spread out.
     effect: Option<(usize, Chords)>,
+}
+
+/// The readability a change leaves, before its place is taken into account.
+const REMINDER: u8 = 80;
+const CHORDS_OFF: u8 = 60;
+const SMALLER_TYPE: u8 = 20;
+/// Taken off for each neighbour of the kind that is plain already: two
+/// plain parts side by side are what alternating avoids.
+const NEXT_TO_PLAIN: u8 = 15;
+/// Taken off, at most, for a change on the first part that can take it,
+/// less further on, so the words and chords stay towards the beginning.
+/// Small enough that the place never changes a grade on its own.
+const EARLY: u8 = 5;
+
+impl Proposal {
+    /// The rating in words: what a person reads next to the score.
+    pub fn grade(&self) -> &'static str {
+        match self.score {
+            75.. => "good",
+            55.. => "fair",
+            35.. => "poor",
+            _ => "last resort",
+        }
+    }
+}
+
+/// How much earlier is worse: `EARLY` for the first of `n` places a change
+/// could go (the first part of a kind never goes plain, so `k` starts at 1
+/// there), nothing for the last.
+fn early(k: usize, n: usize) -> u8 {
+    if n < 2 {
+        return 0;
+    }
+    // Rounded up, so only the last place goes free.
+    (EARLY as usize * (n - 1 - k.min(n - 1))).div_ceil(n - 1) as u8
 }
 
 /// Whether a part shows its chords, and on which paper.
@@ -189,9 +236,8 @@ pub(super) fn lyric_words(code: &str) -> String {
 }
 
 /// Every change the song could take, best first: stage by stage, and within
-/// a stage, chords switched off where they repeat ones already shown (that
-/// loses nothing), before a chorus shortened to its reminder line (that
-/// loses its words), each by the lines it saves.
+/// a stage by the readability it leaves (`score`), then by the lines it
+/// saves, then the later first. A change that saves no line is not offered.
 pub fn proposals(text: &str) -> Vec<Proposal> {
     let scan = scan(text);
     let infos: Vec<PartInfo> = scan.parts.iter().map(|p| info(text, p)).collect();
@@ -202,13 +248,16 @@ pub fn proposals(text: &str) -> Vec<Proposal> {
     proposals.extend(chords_off(text, &infos, Stage::SmallPaper));
     proposals.extend(smaller_type(text, &scan, &infos));
 
+    proposals.retain(|p| p.gain_lines > 0);
     let rank = |p: &Proposal| {
-        let lever = match p.kind {
-            "chordsoff" | "chordsoffonsmallpage" => 0,
-            "insertchorus*" => 1,
-            _ => 2,
-        };
-        (p.stage, lever, std::cmp::Reverse(p.gain_lines), p.line)
+        (
+            p.stage,
+            std::cmp::Reverse(p.score),
+            std::cmp::Reverse(p.gain_lines),
+            // The later of two otherwise equal: chords and words stay
+            // towards the beginning.
+            std::cmp::Reverse(p.line),
+        )
     };
     proposals.sort_by_key(rank);
     proposals
@@ -252,6 +301,25 @@ fn chords_off(text: &str, infos: &[PartInfo], stage: Stage) -> Vec<Proposal> {
             continue;
         }
 
+        // Its place among the parts of its kind, and the plain ones beside
+        // it on small paper: a change for every paper acts there too, so a
+        // neighbour plain only on A5 is plain beside it all the same.
+        let kin: Vec<usize> = (0..infos.len())
+            .filter(|&j| infos[j].part.kind == info.part.kind && switchable(&infos[j]))
+            .collect();
+        let k = kin.iter().position(|&j| j == i).unwrap();
+        let plain = |j: usize| {
+            infos[j].chords.as_ref().is_some_and(|c| c.is_empty())
+                || infos[j].switch.plain_on(Stage::SmallPaper)
+        };
+        let plain_beside = [k.checked_sub(1), Some(k + 1)]
+            .into_iter()
+            .flatten()
+            .filter_map(|n| kin.get(n))
+            .filter(|&&j| plain(j))
+            .count() as u8;
+        let score = CHORDS_OFF - NEXT_TO_PLAIN * plain_beside - early(k, kin.len());
+
         // A part already off on small paper switches to off everywhere by
         // trading the one word for the other.
         let opening = &info.part.opening_rest;
@@ -277,12 +345,21 @@ fn chords_off(text: &str, infos: &[PartInfo], stage: Stage) -> Vec<Proposal> {
             stage,
             line: info.part.line,
             description: format!(
-                "the {} repeats the chords of line {}: \\{}",
+                "the {} repeats the chords of line {}: \\{}{}",
                 part_name(&info.part.kind),
                 earlier.part.line,
-                word
+                word,
+                if plain_beside > 0 {
+                    format!(
+                        " (next to a {} already without chords)",
+                        part_name(&info.part.kind)
+                    )
+                } else {
+                    String::new()
+                }
             ),
             gain_lines: info.chorded_rows,
+            score,
             edits: vec![edit],
             effect: Some((i, target)),
         });
@@ -365,6 +442,20 @@ fn chorus_reminders(text: &str, scan: &Scan, infos: &[PartInfo]) -> Vec<Proposal
         return Vec::new();
     }
 
+    // Every place a chorus is sung, typed or reprinted, for preferring the
+    // later ones: the chorus is read in full first.
+    let mut sung: Vec<usize> = choruses.iter().map(|&i| infos[i].part.line).collect();
+    sung.extend(
+        scan.chorus_repeats
+            .iter()
+            .map(|(span, _)| text[..span.start].matches('\n').count() + 1),
+    );
+    sung.sort();
+    let score_at = |line: usize| {
+        let k = sung.iter().filter(|&&l| l < line).count();
+        REMINDER - early(k, sung.len())
+    };
+
     let mut proposals = Vec::new();
     for pair in choruses.windows(2) {
         let (latest, repeat) = (&infos[pair[0]], &infos[pair[1]]);
@@ -411,6 +502,7 @@ fn chorus_reminders(text: &str, scan: &Scan, infos: &[PartInfo]) -> Vec<Proposal
                 latest.part.line
             ),
             gain_lines: (repeat.lyric_rows + shown_rows).saturating_sub(1),
+            score: score_at(repeat.part.line),
             edits: vec![Edit {
                 span: repeat.part.span.clone(),
                 replacement: star,
@@ -445,6 +537,7 @@ fn chorus_reminders(text: &str, scan: &Scan, infos: &[PartInfo]) -> Vec<Proposal
             description: "the chorus is reprinted in full: shorten it to \\insertchorus*"
                 .to_string(),
             gain_lines: rows.saturating_sub(1),
+            score: score_at(line),
             edits: vec![Edit {
                 span: span.start..span.start + "\\insertchorus".len(),
                 replacement: "\\insertchorus*".to_string(),
@@ -489,8 +582,10 @@ fn smaller_type(text: &str, scan: &Scan, infos: &[PartInfo]) -> Vec<Proposal> {
         line: first.line,
         description: "set the song a size smaller on small paper (8 pt): \\smalleronsmallpage"
             .to_string(),
-        // 8 pt for 9 is about one line in nine.
-        gain_lines: rows / 9,
+        // 8 pt for 9 is about one line in nine. It also narrows every line,
+        // so it can mend a line too wide on a song too short to save one.
+        gain_lines: (rows / 9).max(1),
+        score: SMALLER_TYPE,
         edits: vec![Edit {
             span: line_start..line_start,
             replacement: "\\smalleronsmallpage\n\n".to_string(),
@@ -819,8 +914,130 @@ mod tests {
         let mut sorted = stages.clone();
         sorted.sort();
         assert_eq!(stages, sorted);
+        // A glance back to the chorus reads better than chords looked up
+        // elsewhere, line after line.
         let kinds: Vec<&str> = proposals(&text).iter().map(|p| p.kind).collect();
-        assert_eq!(kinds[0], "chordsoff");
+        assert_eq!(kinds[..2], ["insertchorus*", "chordsoff"]);
+    }
+
+    /// The first proposal, applied, again and again: what a person taking
+    /// the recommended step each time ends up with.
+    fn plain_verses(mut text: String, steps: usize) -> Vec<usize> {
+        for _ in 0..steps {
+            let first = proposals(&text)
+                .into_iter()
+                .find(|p| p.kind == "chordsoff")
+                .expect("a chordsoff proposal");
+            text = apply(&text, &[&first]).unwrap();
+        }
+        let scan = scan(&text);
+        (1..)
+            .zip(&scan.parts)
+            .filter(|(_, p)| has_word(&text[p.opening_rest.clone()], "chordsoff"))
+            .map(|(n, _)| n)
+            .collect()
+    }
+
+    #[test]
+    fn chords_go_off_alternating_and_late_first() {
+        let verses = |n: usize| -> String {
+            (0..n)
+                .map(|k| part("\\beginverse", if k % 2 == 0 { &V } else { &W }))
+                .collect()
+        };
+        // Four verses: the last first, then the second, never the third.
+        assert_eq!(plain_verses(song(&verses(4)), 1), [4]);
+        assert_eq!(plain_verses(song(&verses(4)), 2), [2, 4]);
+        // Five: the last, then the third.
+        assert_eq!(plain_verses(song(&verses(5)), 2), [3, 5]);
+
+        // Then the second can only go next to the plain third: offered,
+        // but rated lower and saying why.
+        let text = song(
+            &[
+                part("\\beginverse", &V),
+                part("\\beginverse", &W),
+                part("\\beginverse\\chordsoff", &V),
+                part("\\beginverse", &W),
+                part("\\beginverse\\chordsoff", &V),
+            ]
+            .concat(),
+        );
+        let p = proposals(&text)
+            .into_iter()
+            .find(|p| p.id == "chordsoff@10")
+            .unwrap();
+        assert_eq!(p.grade(), "poor");
+        assert!(
+            p.description.contains("next to a verse already"),
+            "{}",
+            p.description
+        );
+    }
+
+    #[test]
+    fn a_neighbour_plain_on_small_paper_counts_for_every_paper() {
+        let text = song(
+            &[
+                part("\\beginverse", &V),
+                part("\\beginverse\\chordsoffonsmallpage", &W),
+                part("\\beginverse", &V),
+                part("\\beginverse", &W),
+            ]
+            .concat(),
+        );
+        let p = proposals(&text)
+            .into_iter()
+            .find(|p| p.id == "chordsoff@15")
+            .unwrap();
+        assert_eq!(p.grade(), "poor");
+    }
+
+    #[test]
+    fn being_early_never_changes_the_grade_by_itself() {
+        let verses: String = (0..8)
+            .map(|k| part("\\beginverse", if k % 2 == 0 { &V } else { &W }))
+            .collect();
+        let p = proposals(&song(&verses))
+            .into_iter()
+            .find(|p| p.id == "chordsoff@10")
+            .unwrap();
+        assert_eq!(p.grade(), "fair");
+
+        let choruses: String = (0..8).map(|_| part("\\beginchorus", &R)).collect();
+        let p = proposals(&song(&choruses))
+            .into_iter()
+            .find(|p| p.id == "insertchorus*@10")
+            .unwrap();
+        assert_eq!(p.grade(), "good");
+    }
+
+    #[test]
+    fn every_proposal_has_its_rating() {
+        let text = song(
+            &[
+                part("\\beginchorus", &R),
+                part("\\beginverse", &V),
+                part("\\beginverse", &W),
+                part("\\beginchorus", &R),
+            ]
+            .concat(),
+        );
+        // The second chorus can lose its chords as well as be shortened.
+        let mut grades: Vec<(&str, &str)> = proposals(&text)
+            .iter()
+            .map(|p| (p.kind, p.grade()))
+            .collect();
+        grades.dedup();
+        assert_eq!(
+            grades,
+            [
+                ("insertchorus*", "good"),
+                ("chordsoff", "fair"),
+                ("chordsoffonsmallpage", "fair"),
+                ("smalleronsmallpage", "last resort"),
+            ]
+        );
     }
 
     #[test]
