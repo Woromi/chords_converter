@@ -447,9 +447,9 @@ enum Listing {
 
 /// Lists the proposals for a song, and with `--measure` says whether it fits.
 ///
-/// `--fit a4` offers the changes that act on every paper. `--fit a5` does
-/// too while the song still overflows A4 (it overflows A5 then as well), and
-/// the changes for small paper only once A4 fits. Without `--measure` there
+/// `--fit a4` offers the changes that act on every paper. `--fit a5` offers
+/// those first while the song still overflows A4 (it overflows A5 then as
+/// well), the ones for small paper after them, and only those once A4 fits. Without `--measure` there
 /// is no telling, so both stages are listed, every-paper changes first.
 fn list_proposals(
     file: &Path,
@@ -492,8 +492,9 @@ fn list_proposals(
         }
         (Some("a5"), true) => {
             if !measure_on("a4")?.fits(1) {
-                stages = vec![Stage::AllPapers];
-                note = "It does not fit A4 yet, and A5 not either then: first the changes for every paper.".into();
+                // Both, every paper first: once those run out, the ones for
+                // small paper still help A5 (the user).
+                note = "It does not fit A4 yet, and A5 not either then: first the changes for every paper, then those for small paper only.".into();
             } else if measure_on("a5")?.fits(pages_allowed(&text, "a5")) {
                 fits = Some(true);
             } else {

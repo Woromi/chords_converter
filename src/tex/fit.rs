@@ -94,6 +94,10 @@ const SMALLER_TYPE: u8 = 20;
 const PER_LINE_AWAY: u8 = 2;
 /// A part's chords that cannot be found at all: worse than any distance.
 const FAR: usize = 1000;
+/// A part without chords and no neighbour of its kind with them: the last
+/// resort, down to chords on the first of a kind alone (the user), above a
+/// smaller type only.
+const UNSPREAD: u8 = 30;
 /// The lowest a change that keeps chords spread out goes: still "poor",
 /// never "last resort".
 const POOR: u8 = 35;
@@ -458,7 +462,7 @@ fn chords_off_of_kind(
         kin.iter()
             .copied()
             .filter(|&q| {
-                q < j && infos[q].chords == infos[j].chords && !state_in(mask, q).plain_on(paper)
+                q < j && plays_chords_of(&infos[q], &infos[j]) && !state_in(mask, q).plain_on(paper)
             })
             .min_by_key(|&q| gap(q, j))
     };
@@ -483,7 +487,7 @@ fn chords_off_of_kind(
     let source_before = |mask: u32, j: usize| {
         (0..j).any(|q| {
             infos[q].part.kind == kind
-                && infos[q].chords == infos[j].chords
+                && plays_chords_of(&infos[q], &infos[j])
                 && state_in(mask, q) == Chords::Shown
         })
     };
@@ -497,6 +501,9 @@ fn chords_off_of_kind(
         later: usize,
         /// Per part it changes: the part and its new switch.
         changes: Vec<(usize, Chords)>,
+        /// Whether it leaves a part without chords and no neighbour of its
+        /// kind with them: allowed, but only as the last resort.
+        unspread: bool,
     }
     let small_before = hidden_small(current);
     let mut layouts = Vec::new();
@@ -512,9 +519,10 @@ fn chords_off_of_kind(
             }
             changes.push((j, state));
         }
-        if hidden_small(mask) < small_before || !spread_out(infos, &changes) {
+        if hidden_small(mask) < small_before {
             continue;
         }
+        let unspread = !spread_out(infos, &changes);
         let later = kin
             .iter()
             .enumerate()
@@ -526,6 +534,7 @@ fn chords_off_of_kind(
             cost: layout_cost(mask),
             later,
             changes,
+            unspread,
         });
     }
     let current_cost = layout_cost(current);
@@ -561,9 +570,13 @@ fn chords_off_of_kind(
             .map(|p| layout.cost[p].saturating_sub(current_cost[p]))
             .max()
             .unwrap();
-        let score = (CHORDS_OFF as usize)
-            .saturating_sub(PER_LINE_AWAY as usize * further)
-            .max(POOR as usize) as u8;
+        let score = if layout.unspread {
+            UNSPREAD
+        } else {
+            (CHORDS_OFF as usize)
+                .saturating_sub(PER_LINE_AWAY as usize * further)
+                .max(POOR as usize) as u8
+        };
         let gain = hidden
             .iter()
             .map(|&j| infos[j].chorded_rows)
@@ -593,8 +606,16 @@ fn chords_off_of_kind(
                 1 => " (1 line away)".to_string(),
                 n => format!(" ({n} lines away)"),
             };
+            let last_resort = if layout.unspread {
+                format!(
+                    "; it leaves a {} without chords and none beside it with them: the last resort",
+                    part_name(kind)
+                )
+            } else {
+                String::new()
+            };
             format!(
-                "{} repeats the chords of {}{away}: \\{word}",
+                "{} repeats the chords of {}{away}: \\{word}{last_resort}",
                 names.parts[j], names.parts[q],
             )
         } else {
@@ -644,17 +665,39 @@ fn chords_off_of_kind(
         .collect();
     let mut proposals: Vec<Proposal> = singles.iter().map(|l| proposal(l)).collect();
     let total = |l: &Layout| l.cost[0] + l.cost[1];
-    let best_single = singles.iter().map(|l| total(l)).min();
+    // Spread out first, then by distance.
+    let rank = |l: &Layout| (l.unspread, total(l));
+    let best_single = singles.iter().map(|l| rank(l)).min();
     let best = layouts
         .iter()
         .filter(|l| l.mask & current != current)
-        .min_by_key(|l| (total(l), std::cmp::Reverse(l.later)));
+        .min_by_key(|l| (rank(l), std::cmp::Reverse(l.later)));
     if let Some(best) = best
-        && best_single.is_none_or(|c| total(best) < c)
+        && best_single.is_none_or(|c| rank(best) < c)
     {
         proposals.push(proposal(best));
     }
     proposals
+}
+
+/// Whether a part plays chords an earlier part shows, so they can be read
+/// there: the same chords, "no chord" marks aside (they name nothing to
+/// play), or the start of the earlier part's, for a part cut short (a last
+/// chorus of three lines). A chord played otherwise is not the same.
+fn plays_chords_of(earlier: &PartInfo, part: &PartInfo) -> bool {
+    let played = |info: &PartInfo| -> Option<Vec<String>> {
+        info.chords.as_ref().map(|chords| {
+            chords
+                .iter()
+                .filter(|c| c.as_str() != "\\nochord")
+                .cloned()
+                .collect()
+        })
+    };
+    let (Some(earlier), Some(part)) = (played(earlier), played(part)) else {
+        return false;
+    };
+    !part.is_empty() && (part == earlier || (part.len() >= 2 && earlier.starts_with(&part)))
 }
 
 /// The edit that turns a part's chord switch from one state to another.
@@ -1381,20 +1424,6 @@ pub fn apply(text: &str, chosen: &[&Proposal]) -> Result<String, String> {
             );
         }
     }
-    let effects: Vec<(usize, Chords)> = chosen
-        .iter()
-        .flat_map(|p| p.effects.iter().copied())
-        .collect();
-    if effects.len() > 1 {
-        let scan = scan(text);
-        let infos: Vec<PartInfo> = scan.parts.iter().map(|p| info(text, p)).collect();
-        if !spread_out(&infos, &effects) {
-            return Err(
-                "together, the chosen proposals would leave parts with no chorded part next to them; apply one, then ask again"
-                    .into(),
-            );
-        }
-    }
     let mut out = String::with_capacity(text.len());
     let mut at = 0;
     for edit in edits {
@@ -1462,10 +1491,19 @@ mod tests {
         assert!(ids(&text).iter().all(|id| !id.starts_with("chordsoff")));
     }
 
+    fn grade_of(text: &str, id: &str) -> &'static str {
+        proposals(text)
+            .into_iter()
+            .find(|p| p.id == id)
+            .unwrap_or_else(|| panic!("{id} in {:?}", ids(text)))
+            .grade()
+    }
+
     #[test]
-    fn chorded_verses_stay_spread_out() {
-        // Four verses on one progression: the 2nd may go plain, and then
-        // the 3rd, but not the 4th next to a plain 3rd.
+    fn leaving_a_part_without_a_chorded_neighbour_is_the_last_resort() {
+        // Four verses on one progression, the 2nd and 3rd plain: the 4th
+        // may go plain too, chords on the first alone, but only as the
+        // last resort (the user), on every paper and on small paper.
         let text = song(
             &[
                 part("\\beginverse", &V),
@@ -1475,15 +1513,23 @@ mod tests {
             ]
             .concat(),
         );
-        let ids = ids(&text);
-        assert!(!ids.iter().any(|id| id == "chordsoff@20"), "{ids:?}");
-        // Not on small paper either: the 3rd is plain there too.
+        assert_eq!(grade_of(&text, "chordsoff@20"), "last resort");
+        assert_eq!(grade_of(&text, "chordsoffonsmallpage@20"), "last resort");
+        let p = proposals(&text)
+            .into_iter()
+            .find(|p| p.id == "chordsoff@20")
+            .unwrap();
         assert!(
-            !ids.iter().any(|id| id == "chordsoffonsmallpage@20"),
-            "{ids:?}"
+            p.description.ends_with("the last resort"),
+            "{}",
+            p.description
         );
+        // Above a smaller type, which is the very last.
+        let order: Vec<String> = ids(&text);
+        let at = |id: &str| order.iter().position(|i| i == id).unwrap();
+        assert!(at("chordsoffonsmallpage@20") < at("smalleronsmallpage@5"));
 
-        // Two at once may not leave one stranded either.
+        // Chosen together, they are applied together.
         let text = song(
             &[
                 part("\\beginverse", &V),
@@ -1495,13 +1541,13 @@ mod tests {
         let all = proposals(&text);
         let two: Vec<&Proposal> = all.iter().filter(|p| p.kind == "chordsoff").collect();
         assert_eq!(two.len(), 2);
-        assert!(apply(&text, &two).is_err());
+        assert!(apply(&text, &two).is_ok());
     }
 
     #[test]
-    fn a_change_may_not_strand_a_neighbour_already_plain() {
+    fn stranding_a_neighbour_already_plain_is_the_last_resort() {
         // Verse 3 is plain and leans on verse 2; hiding verse 2's chords
-        // would leave verse 3 without a chorded neighbour.
+        // leaves verse 3 without a chorded neighbour.
         let text = song(
             &[
                 part("\\beginverse", &V),
@@ -1510,15 +1556,15 @@ mod tests {
             ]
             .concat(),
         );
-        let ids = ids(&text);
-        assert!(!ids.iter().any(|id| id.ends_with("@10")), "{ids:?}");
+        assert_eq!(grade_of(&text, "chordsoff@10"), "last resort");
     }
 
     #[test]
     fn a_song_already_breaking_the_rule_can_still_take_a_harmless_change() {
         // Verses 2 and 3 are plain side by side, with verse 1 next to 2 only:
         // verse 3 already breaks the rule. Hiding verse 5's chords, with
-        // verse 4 chorded beside it, adds no break.
+        // verse 4 chorded beside it, adds no break; hiding verse 5's
+        // neighbour 4 would.
         let text = song(
             &[
                 part("\\beginverse", &V),
@@ -1530,9 +1576,8 @@ mod tests {
             ]
             .concat(),
         );
-        let ids = ids(&text);
-        assert!(ids.contains(&"chordsoff@30".to_string()), "{ids:?}");
-        assert!(!ids.contains(&"chordsoff@25".to_string()), "{ids:?}");
+        assert_ne!(grade_of(&text, "chordsoff@30"), "last resort");
+        assert_eq!(grade_of(&text, "chordsoff@25"), "last resort");
     }
 
     #[test]
@@ -2073,6 +2118,30 @@ mod tests {
             &["| \\[Am]\\[] |", "| \\[C]\\[] | \\rep{2}"],
         ));
         assert!(!proposals(&text).iter().any(|p| p.kind == "joinlines"));
+    }
+
+    #[test]
+    fn a_part_cut_short_or_ending_on_no_chord_repeats_the_chords() {
+        let short = ["\\[F]Refrén \\[G]zní"];
+        let stop = ["\\[F]Refrén \\[G]zní", "\\[C]a zní \\[\\nochord]"];
+        let other = ["\\[F]Refrén \\[G]zní", "\\[Am]a zní"];
+        let text = song(
+            &[
+                part("\\beginchorus", &R),
+                part("\\beginverse", &V),
+                part("\\beginchorus", &short),
+                part("\\beginverse", &V),
+                part("\\beginchorus", &stop),
+                part("\\beginverse", &V),
+                part("\\beginchorus", &other),
+            ]
+            .concat(),
+        );
+        let ids = ids(&text);
+        assert!(ids.contains(&"chordsoff@15".to_string()), "{ids:?}");
+        assert!(ids.contains(&"chordsoff@24".to_string()), "{ids:?}");
+        // A chord played otherwise is not one to read elsewhere.
+        assert!(!ids.contains(&"chordsoff@34".to_string()), "{ids:?}");
     }
 
     #[test]

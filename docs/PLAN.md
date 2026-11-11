@@ -173,6 +173,16 @@ part of the identical-output check `\insertchorus` has.
          `category: "restructure"`. Letter to Dana: three "key change"
          unnumbered verses → three choruses → `tidy`: a chorus and two
          `\insertchorus` → `shrink`: `\insertchorus*` for each.
+   - [x] Spreading is a preference, not a rule (0.9.0, the user): a change
+         leaving a plain part with no chorded neighbour is offered as the
+         last resort (30), down to chords on the first of a kind alone;
+         `apply` no longer refuses it. `--fit a5` on a song that doesn't
+         fit A4 lists the small-paper changes (smaller type too) after the
+         every-paper ones instead of hiding them.
+   - [x] Chords off for a part cut short or ending on `\nochord` (the
+         user, Ženy mužů): it repeats an earlier part's chords when they
+         are the same `\nochord` aside, or their start (two chords at
+         least). 12 more proposals in 11 songbook songs, none lost.
    - [x] Instrumentals (0.8.0, the user): a row played again in a row is
          printed once with `\rep{n}` (`rep`, 85; 17 instrumentals in 15
          songbook songs; rows of `^` left alone), and `join` joins

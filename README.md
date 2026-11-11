@@ -124,8 +124,10 @@ Song.tex
   fitted to A4 with changes that act on every paper: `\insertchorus*` for a
   chorus sung again with the same words and chords, give or take one chord
   (or reprinted with `\insertchorus`; a chorus in another key keeps its
-  chords, since the reminder prints none), `\chordsoff` on a part that repeats the chords of an
-  earlier one. Once A4 fits, the changes act on small paper only:
+  chords, since the reminder prints none), `\chordsoff` on a part that
+  repeats the chords of an earlier one: the same chords, `\nochord` aside,
+  or the start of them for a part cut short (a last chorus of three
+  lines). Once A4 fits, the changes act on small paper only:
   `\chordsoffonsmallpage`, then `\smalleronsmallpage` as the last resort.
 - **Rating.** Each proposal has a score from 0 to 100 for how readable it
   leaves the song, and a grade: good (75 and up), fair (55), poor (35), last
@@ -173,9 +175,12 @@ Song.tex
   with `\rep{k}` counts k times. Rows of `^` are left alone: each `^`
   replays the next chord remembered, so rows written alike play different
   chords. On the songbook: 17 instrumentals in 15 songs.
-- **Chords stay spread out.** The first part of a kind keeps its chords, and
-  a part that loses them must still have a chorded neighbour of its kind.
-  This holds on each paper, for each proposal and for any chosen together.
+- **Chords stay spread out, until the last resort.** The first part of a
+  kind always keeps its chords, and a part that loses them should still
+  have a chorded neighbour of its kind, on each paper. A change that leaves
+  one without is still offered, since a song that fits no other way may
+  keep chords on the first part alone, but it is graded last resort (30),
+  above a smaller type only.
 - **`--measure`** typesets the song with the songbook's own
   `scripts/checkpaper.py` (the reference measurement, not imitated) and says
   how many pages it takes and which lines are too wide. A song fits when it
@@ -197,8 +202,10 @@ Song.tex
   to the end of `\end…`.
 - **`apply`** finds the proposals afresh in the file as it is, so an id from
   an older `shrink` that no longer applies is refused. Proposals that change
-  the same text, or that together would leave a part without a chorded
-  neighbour, are refused together; apply one, then shrink again.
+  the same text are refused together; apply one, then shrink again.
+- **`--fit a5` on a song that doesn't fit A4** lists the changes for every
+  paper first and the ones for small paper only after them (a smaller type
+  among them: the songbook has none for A4); once A4 fits, only the latter.
 
 ### Corrections: `check`
 

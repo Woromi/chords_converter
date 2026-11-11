@@ -25,7 +25,7 @@ cargo run -- <url|file.html|file.txt|-> [latex|text|debug]
 **The version in `Cargo.toml` is part of the interface.** ZubuvZpevnikUi
 runs this tool (as a git submodule, built next to the app) and checks
 `chords_converter --version` against a minimum. Raise the minor version
-(`0.8.0` → `0.9.0`) in the same commit as any change to the command line,
+(`0.9.0` → `0.10.0`) in the same commit as any change to the command line,
 the exit codes, the `Saving output to:` lines or the `shrink --json`
 format, and tell the UI (a note in its `docs/`).
 
@@ -215,7 +215,9 @@ site's label: the refrain of She's Always A Woman came from the site as a
   the source but hides them: `\beginverse\chordsoff` (hidden everywhere) or
   `\beginverse\chordsoffonsmallpage` (hidden only on A5). **The first verse
   always shows its chords.** Spread the chorded verses evenly, so every plain
-  verse has a chorded one next to it. Both switches also work mid-part, on a
+  verse has a chorded one next to it. Only when nothing else makes the song
+  fit may more go plain, down to chords on the first of each part alone
+  (the last resort). Both switches also work mid-part, on a
   line of their own (`\chordson` turns chords back on).
 - **Setup for a whole part goes on its opening line**, right after
   `\beginverse` (or `\beginchorus[2]`, …): `\chordsoff`,
