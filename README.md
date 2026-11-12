@@ -46,6 +46,14 @@ it, so it is never left half written.
   them that way already. Indentation, comments (which may hold text lined
   up by hand) and the space of a control space `\ ` are kept. On the
   songbook: 152 lines in 49 songs, all typeset pixel for pixel the same.
+- **Indentation as the songbook's `latexindent` sets it**, which an editor
+  easily breaks: four spaces a level, the prelude's keys one level in, a
+  part's lines one level inside `\begin…`/`\end…`, the lines inside
+  `\if… \else \fi` one level in, and a value or argument spread over
+  lines (`chr={…}`, a long `\enquote{…}`) further in. Only the spaces
+  before a line's first character change, which TeX skips. On all 218
+  songbook songs it sets what `latexindent -l latexindent.yaml` sets (one
+  `latexindent` slip aside), without needing it installed.
 - **A chord between two words gets a space before it**: `dál\[G] a sál`
   becomes `dál \[G] a sál`. Glued to the word before, the chord belongs to
   neither word, and with `\chordsoff` the line reads otherwise. Chords at

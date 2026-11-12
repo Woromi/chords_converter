@@ -38,6 +38,13 @@ pub fn tidy(text: &str) -> (String, Vec<Change>) {
     let text = apart.as_str();
     spaces.extend(between);
 
+    // The indentation, as the songbook's latexindent sets it: an editor
+    // breaks it, and it prints nothing. No line comes or goes either.
+    let indents = reindent(text);
+    let indented = apply(text, &indents);
+    let text = indented.as_str();
+    spaces.extend(indents);
+
     // Setup switches go onto the opening line next, so every rule after
     // finds them in one place.
     let mut setups = setup_to_opening_line(text, &scan(text));
@@ -88,6 +95,147 @@ pub fn tidy(text: &str) -> (String, Vec<Change>) {
     changes.extend(later);
     changes.sort_by_key(|c| c.line);
     (tidied, changes)
+}
+
+/// Each line's indentation as the songbook's `latexindent -l latexindent.yaml`
+/// sets it, four spaces a level: the prelude's keys one level in, a part's
+/// lines one level inside its `\begin…` and `\end…`, the lines inside
+/// `\if… \else \fi` one level in, and the lines inside a `{…}` or `[…]`
+/// that spans lines one more (`chr={…}`). Only the spaces before a line's
+/// first character change; TeX skips them, so the song prints the same. A
+/// comment line is indented like the code around it, and what it holds
+/// stays as it is. One change for the whole song.
+fn reindent(text: &str) -> Vec<Change> {
+    use super::{control_words, opens_conditional};
+    let mut edits: Vec<(Range<usize>, String, usize)> = Vec::new();
+    let mut depth: usize = 0;
+    // What each open level took: closing one gives back as many.
+    let mut levels: Vec<usize> = Vec::new();
+    let mut at = 0;
+    for (index, raw) in text.split_inclusive('\n').enumerate() {
+        let line = raw.trim_end_matches(['\n', '\r']);
+        let body = line.trim_start();
+        let lead = line.len() - body.len();
+        let code = code_of(body);
+
+        // What the line holds, in order: what opens a level, what closes
+        // one, an `\else`, and text. A line that starts by closing (or
+        // with `\else`) stands one level out itself.
+        #[derive(PartialEq)]
+        enum Token {
+            /// How many levels it opens: a key's value spread over lines,
+            /// `chr={`, two, as latexindent sets it.
+            Open(usize),
+            Close,
+            Else,
+            Text,
+        }
+        let mut tokens = Vec::new();
+        let words = control_words(code);
+        let bytes = code.as_bytes();
+        let mut k = 0;
+        while k < bytes.len() {
+            if let Some(&(_, word)) = words.iter().find(|(w_at, _)| *w_at == k) {
+                let environment = code[k + 1 + word.len()..].starts_with('{');
+                tokens.push(if word == "beginsong" || word == "endsong" {
+                    // The song itself is no level.
+                    Token::Text
+                } else if word.starts_with("begin") && word.len() > 5 && !environment {
+                    Token::Open(1)
+                } else if word.starts_with("end") && word.len() > 3 && !environment {
+                    Token::Close
+                } else if opens_conditional(word) {
+                    Token::Open(1)
+                } else if word == "fi" {
+                    Token::Close
+                } else if word == "else" {
+                    Token::Else
+                } else {
+                    Token::Text
+                });
+                k += 1 + word.len();
+                continue;
+            }
+            // Inside a letter of more than one byte: nothing to read there.
+            if !code.is_char_boundary(k) {
+                k += 1;
+                continue;
+            }
+            // A chord, `\[Am]`, is text: its `]` closes nothing.
+            if code[k..].starts_with("\\[") {
+                tokens.push(Token::Text);
+                k = code[k..]
+                    .find(']')
+                    .map_or(bytes.len(), |close| k + close + 1);
+                continue;
+            }
+            match bytes[k] {
+                // An escaped brace or bracket is text.
+                b'\\' => {
+                    tokens.push(Token::Text);
+                    k += 2;
+                    continue;
+                }
+                b'{' | b'[' => {
+                    let value = code[..k].trim_end().ends_with('=');
+                    tokens.push(Token::Open(if value { 2 } else { 1 }))
+                }
+                b'}' | b']' => tokens.push(Token::Close),
+                c if !c.is_ascii_whitespace() => tokens.push(Token::Text),
+                _ => {}
+            }
+            k += 1;
+        }
+        let first_closes = matches!(tokens.first(), Some(Token::Close | Token::Else));
+        let own = if first_closes {
+            depth.saturating_sub(1)
+        } else {
+            depth
+        };
+        for token in &tokens {
+            match token {
+                Token::Open(n) => {
+                    levels.push(*n);
+                    depth += n;
+                }
+                Token::Close => depth = depth.saturating_sub(levels.pop().unwrap_or(1)),
+                _ => {}
+            }
+        }
+
+        if !body.is_empty() {
+            let want = "    ".repeat(own);
+            if line[..lead] != want {
+                edits.push((at..at + lead, want, index + 1));
+            }
+        }
+        at += raw.len();
+    }
+    let Some(first) = edits.first().map(|e| e.2) else {
+        return Vec::new();
+    };
+    let lines = edits.len();
+    // One change spanning them all, its replacement the lines rebuilt.
+    let start = edits[0].0.start;
+    let end = edits.last().unwrap().0.end;
+    let mut replacement = String::new();
+    let mut from = start;
+    for (span, want, _) in &edits {
+        replacement.push_str(&text[from..span.start]);
+        replacement.push_str(want);
+        from = span.end;
+    }
+    replacement.push_str(&text[from..end]);
+    vec![Change {
+        span: start..end,
+        replacement,
+        line: first,
+        description: format!(
+            "indentation set on {lines} line{}",
+            if lines == 1 { "" } else { "s" }
+        ),
+        removed_lines: 0,
+    }]
 }
 
 /// A chord written right after a word and before the space to the next one,
@@ -1062,14 +1210,28 @@ mod tests {
     }
 
     #[test]
+    fn lines_are_indented_as_latexindent_sets_them() {
+        let text = "\\beginsong{Tě}[\n  by={X},\n chr={\n\\gtab{C}{X32010}\n},\n    pap={},\n  ]\n\n      \\beginverse\\chordsoff\nŽe \\[C]tě \\[Am]mám,\n          \\enquote{a \\[G]to\n  je vše}\n   \\endverse\n\\iflargepaper\n\\begininstrumental\n| \\[C]\\[] |\n\\endinstrumental\n  \\else\n% \\beginverse\n    \\fi\n\\endsong\n";
+        let (out, changes) = tidy(text);
+        assert_eq!(
+            out,
+            "\\beginsong{Tě}[\n    by={X},\n    chr={\n            \\gtab{C}{X32010}\n        },\n    pap={},\n]\n\n\\beginverse\\chordsoff\n    Že \\[C]tě \\[Am]mám,\n    \\enquote{a \\[G]to\n        je vše}\n\\endverse\n\\iflargepaper\n    \\begininstrumental\n        | \\[C]\\[] |\n    \\endinstrumental\n\\else\n    % \\beginverse\n\\fi\n\\endsong\n"
+        );
+        assert_eq!(changes.len(), 1);
+        assert_eq!(tidy(&out).1.len(), 0);
+    }
+
+    #[test]
     fn runs_of_spaces_become_one() {
         let text = "\\beginverse\n    \\[C]Hello   \\[G]there,  \n\t\\[F]a~b \t c   % keep   this\n    \\lrep\\   x \\rrep\\ \n    %\\[A]a   b\n\\endverse\n";
         let (tidied, changes) = tidy(text);
         assert_eq!(
             tidied,
-            "\\beginverse\n    \\[C]Hello \\[G]there,\n\t\\[F]a~b c % keep   this\n    \\lrep\\ x \\rrep\\ \n    %\\[A]a   b\n\\endverse\n"
+            // The tab before a line is indentation, set like the rest.
+            "\\beginverse\n    \\[C]Hello \\[G]there,\n    \\[F]a~b c % keep   this\n    \\lrep\\ x \\rrep\\ \n    %\\[A]a   b\n\\endverse\n"
         );
-        assert_eq!(changes.len(), 1);
+        // The spaces, and the tab's line indented.
+        assert_eq!(changes.len(), 2, "{changes:?}");
         assert_eq!(changes[0].line, 2);
         assert!(tidy(&tidied).1.is_empty());
         // `\\` is a backslash pair, not a control space.
@@ -1205,7 +1367,14 @@ mod tests {
             chorus("", BODY, ""),
             chorus("", BODY, ""),
         ]);
-        assert!(tidy(&conditional).1.is_empty());
+        // Only indented, the chorus inside the condition one level in.
+        let changes = tidy(&conditional).1;
+        assert!(
+            changes
+                .iter()
+                .all(|c| c.description.starts_with("indentation")),
+            "{changes:?}"
+        );
 
         let memory = "    ^Hello ^there,\n    ^hello\n";
         let text = song(&[chorus("", memory, ""), chorus("", memory, "")]);

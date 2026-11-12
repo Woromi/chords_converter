@@ -121,6 +121,12 @@ part of the identical-output check `\insertchorus` has.
          chord with a vowel after it: the patterns miss syllables in Czech
          too (`u-mět`), which first moved 84 chords wrongly. 4 moves on the
          songbook, all right.
+   - [x] Indentation (the user: editing breaks it): `tidy` sets each
+         line's leading spaces as `latexindent -l latexindent.yaml` does.
+         Compared with `latexindent` on all 218 songbook songs: the same
+         but for one `latexindent` slip (Zlaté údolí's "(Harmonika)" inside
+         `\iflargepaper`). It re-indents 14 songbook songs, hand-edited
+         or never formatted.
    - [x] Idempotent: moves first, then choruses on the moved text; a second
          pass over every tidied songbook song changes nothing.
 5. [x] **Tier 3 `shrink` (until 0.6.0 `suggest`)/`apply`** (`src/tex/fit.rs`, `src/tex/measure.rs`):

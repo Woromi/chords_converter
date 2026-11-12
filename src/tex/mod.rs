@@ -90,7 +90,7 @@ pub fn code_of(line: &str) -> &str {
 
 /// The control words in a stretch of code, each with where it starts:
 /// `\beginchorus` gives `beginchorus`.
-fn control_words(code: &str) -> Vec<(usize, &str)> {
+pub(super) fn control_words(code: &str) -> Vec<(usize, &str)> {
     let mut words = Vec::new();
     let bytes = code.as_bytes();
     let mut i = 0;
@@ -118,7 +118,7 @@ fn control_words(code: &str) -> Vec<(usize, &str)> {
 /// Whether a control word opens a conditional. `\ifx`, `\iflargepaper`,
 /// `\ifSB@inchorus` … all start with "if"; a word that merely does
 /// (`\iffalse` aside) is not one the songs use.
-fn opens_conditional(word: &str) -> bool {
+pub(super) fn opens_conditional(word: &str) -> bool {
     word.len() > 2 && word.starts_with("if")
 }
 

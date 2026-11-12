@@ -147,7 +147,7 @@ project file under `projects/`. One song per file.
   musical length (all 4 bars, or all 2). Sites often split a phrase in two; join
   them back. Never break just the one line that is too wide.
 - **Indent** part content by 4 spaces (`latexindent -l latexindent.yaml` in the
-  songbook does it; it is rendering-neutral).
+  songbook does it, and so does this tool's `tidy`; it is rendering-neutral).
 - **`\[X]`** goes immediately before the syllable the chord falls on.
   Sharp is `#`, flat is `&` (`\[F#m]`, `\[B&]`). Trailing chords after the last
   word are separated by single spaces: `\[E&sus4] \[E&]`.
