@@ -115,6 +115,12 @@ part of the identical-output check `\insertchorus` has.
          gets a space before it (`dál\[G] a` → `dál \[G] a`, the user: with
          `\chordsoff` the line read otherwise). The printer already places
          such a chord on the next word. 21 chords in 13 songbook songs.
+   - [x] A chord on the consonants closing a word's last syllable moves to
+         the syllable's start in Czech and Slovak (`schodec\[F]h` →
+         `scho\[F]dech`, the user), and never stays inside `ch`. Not for a
+         chord with a vowel after it: the patterns miss syllables in Czech
+         too (`u-mět`), which first moved 84 chords wrongly. 4 moves on the
+         songbook, all right.
    - [x] Idempotent: moves first, then choruses on the moved text; a second
          pass over every tidied songbook song changes nothing.
 5. [x] **Tier 3 `shrink` (until 0.6.0 `suggest`)/`apply`** (`src/tex/fit.rs`, `src/tex/measure.rs`):
@@ -201,6 +207,14 @@ part of the identical-output check `\insertchorus` has.
          of a line, before the first word, moved onto the word, as one
          proposal for the whole song. Not for pauses between words: too
          much noise, and some are meant.
+   - [x] Commas (0.10.0, the user): `join` puts a comma where the language
+         wants one between the joined lines and names the lines no rule
+         decides; `check` lists a Czech/Slovak clause word inside a line
+         with no comma before it (50 on the songbook after leaving out
+         prepositions, particles and "ale").
+   - [x] Marking a finding right (0.10.0, the user): `% nocheck` above a
+         line, `% nocheck <kind>` for the song; `dismiss` in the JSON and
+         `apply --dismiss`.
    - [ ] A missing `~` after a Czech one-letter word: left out, since the
          songbook ties only 249 of 1466 (lines rarely wrap). Ask the user.
    - [ ] Spelling against the Hunspell dictionary of the song's `lang`

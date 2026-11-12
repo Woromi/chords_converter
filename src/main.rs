@@ -571,6 +571,11 @@ fn list_proposals(
                     "score": p.score,
                     "grade": p.grade(),
                     "category": p.category(),
+                    "dismiss": tex::fit::dismissal(&text, p).map(|e| serde_json::json!({
+                        "start": e.span.start,
+                        "end": e.span.end,
+                        "replacement": e.replacement,
+                    })),
                     "sources": p.sources.iter().map(|s| serde_json::json!({
                         "line": s.line,
                         "start": s.span.start,
@@ -702,20 +707,49 @@ fn list_proposals(
 /// Applies the chosen proposals to a song. The proposals are found afresh
 /// in the file as it is now, so an id from an older listing that no longer
 /// applies is refused rather than applied to the wrong bytes.
-fn apply_file(file: &Path, ids: &[String], output: &Output) -> Result<(), String> {
+fn apply_file(
+    file: &Path,
+    ids: &[String],
+    dismiss: &[String],
+    output: &Output,
+) -> Result<(), String> {
     let text = fs::read_to_string(file)
         .map_err(|e| format!("Failed to read file '{}': {}", file.display(), e))?;
     let all = tex::fit::proposals(&text);
-    let mut chosen = Vec::new();
-    for id in ids {
-        let proposal = all.iter().find(|p| &p.id == id).ok_or_else(|| {
+    let find = |id: &String| {
+        all.iter().find(|p| &p.id == id).ok_or_else(|| {
             format!(
                 "No proposal '{}' for '{}' (ask again with shrink, join or check).",
                 id,
                 file.display()
             )
-        })?;
-        chosen.push(proposal);
+        })
+    };
+    if !dismiss.is_empty() {
+        let mut edits = Vec::new();
+        for id in dismiss {
+            let p = find(id)?;
+            let edit = tex::fit::dismissal(&text, p)
+                .ok_or_else(|| format!("'{}' is no finding of check to mark right.", id))?;
+            eprintln!(
+                "{}:{}: marked right: {}",
+                file.display(),
+                p.line,
+                p.description
+            );
+            edits.push(edit);
+        }
+        edits.sort_by_key(|e| e.span.start);
+        edits.dedup_by_key(|e| (e.span.start, e.replacement.clone()));
+        let mut changed = text.clone();
+        for edit in edits.iter().rev() {
+            changed.replace_range(edit.span.clone(), &edit.replacement);
+        }
+        return write_back(file, &changed, true, output);
+    }
+    let mut chosen = Vec::new();
+    for id in ids {
+        chosen.push(find(id)?);
     }
     let changed = tex::fit::apply(&text, &chosen)?;
     for p in &chosen {
@@ -734,6 +768,7 @@ Usage:
   chords_converter join <SONG.tex> [--songbook DIR] [--json]
   chords_converter check <SONG.tex> [--json]
   chords_converter apply <SONG.tex> --id ID [--id ID ...] [-o FILE | -o -]
+  chords_converter apply <SONG.tex> --dismiss ID [--dismiss ID ...] [-o FILE | -o -]
 
 SOURCE   a URL of a supported website, a local text file (chords over
          lyrics), a page saved from a browser, or - to paste the song
@@ -764,7 +799,10 @@ check no line comes out too wide on A4 or A5 (slow: a run per kind).
 check lists corrections, whether the song fits or not: a part with the
 chorus's words typed as something else may be made a chorus (then tidy
 reprints its copies); a line's copies differing in one word by a slip;
-apostrophes typed both ways; ~ in an English song.
+apostrophes typed both ways; ~ in an English song; a comma missing
+before a Czech or Slovak clause. A line '% nocheck' above a line marks
+its findings right (apply --dismiss ID adds it), and '% nocheck KIND'
+anywhere those of a kind.
 apply makes the chosen ones, from any of the three; apply one, then ask
 again.";
 
@@ -806,6 +844,8 @@ enum Command {
     Apply {
         file: PathBuf,
         ids: Vec<String>,
+        /// Findings of `check` marked right instead (`% nocheck`).
+        dismiss: Vec<String>,
         output: Output,
     },
 }
@@ -952,6 +992,7 @@ fn parse_suggest(args: &[String]) -> Result<Command, String> {
 fn parse_apply(args: &[String]) -> Result<Command, String> {
     let mut file = None;
     let mut ids = Vec::new();
+    let mut dismiss = Vec::new();
     let mut output = Output::Default;
     let mut args = args.iter();
     while let Some(arg) = args.next() {
@@ -962,6 +1003,7 @@ fn parse_apply(args: &[String]) -> Result<Command, String> {
         };
         match arg.as_str() {
             "--id" => ids.push(value()?),
+            "--dismiss" => dismiss.push(value()?),
             "--output" | "-o" => {
                 output = match value()?.as_str() {
                     "-" => Output::Stdout,
@@ -976,10 +1018,15 @@ fn parse_apply(args: &[String]) -> Result<Command, String> {
         }
     }
     let file = file.ok_or_else(|| "apply needs a song file.".to_string())?;
-    if ids.is_empty() {
-        return Err("apply needs at least one --id.".to_string());
+    if ids.is_empty() == dismiss.is_empty() {
+        return Err("apply needs --id or --dismiss (not both).".to_string());
     }
-    Ok(Command::Apply { file, ids, output })
+    Ok(Command::Apply {
+        file,
+        ids,
+        dismiss,
+        output,
+    })
 }
 
 fn parse_tidy(args: &[String]) -> Result<Command, String> {
@@ -1049,7 +1096,12 @@ async fn main() {
         Command::Check { file, json } => {
             list_proposals(&file, None, false, None, json, Listing::Check)
         }
-        Command::Apply { file, ids, output } => apply_file(&file, &ids, &output),
+        Command::Apply {
+            file,
+            ids,
+            dismiss,
+            output,
+        } => apply_file(&file, &ids, &dismiss, &output),
         Command::Convert {
             source,
             format,
@@ -1280,10 +1332,31 @@ mod tests {
             Ok(Command::Apply {
                 file: "S.tex".into(),
                 ids: vec!["chordsoff@10".to_string(), "x@2".to_string()],
+                dismiss: Vec::new(),
                 output: Output::Stdout,
             })
         );
         assert!(parse_args(&args(&["apply", "S.tex"])).is_err());
+        assert_eq!(
+            parse_args(&args(&["apply", "S.tex", "--dismiss", "typo@20"])),
+            Ok(Command::Apply {
+                file: "S.tex".into(),
+                ids: Vec::new(),
+                dismiss: vec!["typo@20".to_string()],
+                output: Output::Default,
+            })
+        );
+        assert!(
+            parse_args(&args(&[
+                "apply",
+                "S.tex",
+                "--id",
+                "a@1",
+                "--dismiss",
+                "b@2"
+            ]))
+            .is_err()
+        );
     }
 
     #[test]

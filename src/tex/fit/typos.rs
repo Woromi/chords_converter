@@ -241,6 +241,190 @@ pub(super) fn typos(infos: &[PartInfo], names: &Names, lang: Option<&str>) -> Ve
     if lang.is_some_and(|l| l.eq_ignore_ascii_case("english")) {
         proposals.extend(ties_in_english(text, infos));
     }
+    if lang.is_some_and(czech_like) {
+        proposals.extend(missing_commas(&lines, text, names));
+    }
+    proposals
+}
+
+fn czech_like(lang: &str) -> bool {
+    matches!(lang.to_lowercase().as_str(), "czech" | "slovak")
+}
+
+/// Whether a comma goes before `word` when it starts a clause, by the
+/// language's rule: `Some(true)` before a word opening a subordinate clause
+/// in Czech or Slovak (že, když, který…) or before "ale"/"but",
+/// `Some(false)` before the conjunctions that join without one (a, i,
+/// nebo / and, or), `None` where no rule tells (a person decides).
+pub(super) fn comma_before(lang: Option<&str>, word: &str) -> Option<bool> {
+    let word = word.to_lowercase();
+    let w = word.as_str();
+    match lang {
+        Some(l) if czech_like(l) => {
+            if CZECH_COMMA.contains(&w) || w.starts_with("kter") || w.starts_with("ktor") {
+                Some(true)
+            } else if ["a", "i", "nebo", "ani", "či", "alebo"].contains(&w) {
+                Some(false)
+            } else {
+                None
+            }
+        }
+        Some(l) if l.eq_ignore_ascii_case("english") => match w {
+            "but" => Some(true),
+            "and" | "or" | "nor" => Some(false),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// Czech and Slovak words that open a clause with a comma before it.
+const CZECH_COMMA: &[&str] = &[
+    "že",
+    "protože",
+    "aby",
+    "abych",
+    "abys",
+    "abychom",
+    "abyste",
+    "kdyby",
+    "kdybych",
+    "kdybys",
+    "kdybychom",
+    "kdybyste",
+    "když",
+    "jenž",
+    "jež",
+    "jehož",
+    "jejž",
+    "ale",
+    "avšak",
+    "ať",
+    "jestli",
+    "pokud",
+    "dokud",
+    "zatímco",
+    "takže",
+    "jakmile",
+    "ačkoli",
+    "ačkoliv",
+    "přestože",
+    "kdežto",
+    "neboť",
+    "keď",
+    "lebo",
+    "pretože",
+    "hoci",
+];
+
+/// Words after which a clause word takes no comma between the two: a
+/// preposition, whose comma goes before it ("místo, na kterém"), and the
+/// particles and adverbs that lead into the clause ("tak ať", "jen aby",
+/// "pak když").
+const NO_COMMA_AFTER: &[&str] = &[
+    "na",
+    "ze",
+    "z",
+    "v",
+    "ve",
+    "s",
+    "se",
+    "k",
+    "ke",
+    "o",
+    "u",
+    "do",
+    "od",
+    "po",
+    "pro",
+    "při",
+    "za",
+    "před",
+    "pod",
+    "nad",
+    "bez",
+    "přes",
+    "mezi",
+    "kvůli",
+    "podle",
+    "proti",
+    "skrz",
+    "mimo",
+    "tak",
+    "pak",
+    "jen",
+    "jenom",
+    "už",
+    "ještě",
+    "právě",
+    "hlavně",
+    "zvlášť",
+    "teprve",
+    "až",
+    "asi",
+    "snad",
+    "prostě",
+    "kolik",
+    "proto",
+    "zase",
+    "potom",
+    "teď",
+    "tam",
+    "tu",
+    "proč",
+    "jak",
+    "však",
+    "tedy",
+    "jako",
+    "nebo",
+];
+
+/// Inside a Czech or Slovak line, a word opening a clause with no comma
+/// before it: "vím že" for "vím, že". Not after a, i, nebo (`i když`), nor
+/// at the start of a line, whose end stands for the comma.
+fn missing_commas(lines: &[Sung], text: &str, names: &Names) -> Vec<Proposal> {
+    let mut proposals = Vec::new();
+    for sung in lines {
+        for pair in sung.words.windows(2) {
+            let (before, word) = (&pair[0], &pair[1]);
+            let w = word.text.to_lowercase();
+            // "ale" inside a clause is a particle ("nejdřív ale musím").
+            let opens = (CZECH_COMMA.contains(&w.as_str())
+                && !["ale", "avšak"].contains(&w.as_str()))
+                || w.starts_with("kter")
+                || w.starts_with("ktor");
+            let prev = before.text.to_lowercase();
+            if !opens
+                || comma_before(Some("czech"), &prev) == Some(false)
+                || NO_COMMA_AFTER.contains(&prev.as_str())
+            {
+                continue;
+            }
+            // Only a space, chords or a tie between the two words: no
+            // punctuation is there already.
+            let between = &text[before.span.end..word.span.start];
+            let bare = between
+                .split("\\[")
+                .map(|s| s.split_once(']').map_or(s, |(_, rest)| rest))
+                .all(|s| s.chars().all(|c| c.is_whitespace() || c == '~'));
+            if !bare || !before.whole {
+                continue;
+            }
+            proposals.push(correction(
+                format!("comma@{}", sung.line),
+                "comma",
+                sung.line,
+                format!(
+                    "{}: \"{} {}\" may want a comma before \"{}\"",
+                    names.parts[sung.part], before.text, word.text, word.text
+                ),
+                vec![Edit {
+                    span: before.span.end..before.span.end,
+                    replacement: ",".to_string(),
+                }],
+            ));
+        }
+    }
     proposals
 }
 

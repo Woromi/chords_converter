@@ -94,8 +94,10 @@ it, so it is never left half written.
   syllable in front of it. Syllables come from the TeX hyphenation patterns
   for the song's `lang`. Those patterns don't know every syllable (English
   ones find none in "melodies"), so a chord only moves back across
-  consonants, never across a vowel. This one does change where a chord
-  prints, which is the point.
+  consonants, never across a vowel. The one exception is Czech and Slovak,
+  for the consonants closing a word's last syllable: `schodec\[F]h` becomes
+  `scho\[F]dech`. And a chord never stays between the two letters of
+  `ch`. This one does change where a chord prints, which is the point.
 
 ### Fitting a page: `shrink`, `join` and `apply`
 
@@ -167,6 +169,11 @@ Song.tex
   A4 or A5 (nor one already). That is a typesetting run per kind of part,
   seconds on a long song, so `shrink` leaves it out and `join` does it on
   request. Its output is `shrink`'s, and its ids work with `apply`.
+  Where two lines meet and the first ends without punctuation, the
+  language's rule decides on a comma: one before a word opening a clause
+  (Czech `že`, `když`, `aby`, `který`, `ale`…; English "but"), none before
+  `a`, `i`, `nebo` / "and", "or". Where no rule tells, there is none, and
+  the description names the lines that may want one.
   Instrumentals join too, bar to bar: `| a | b |` and `| c | d |` become
   `| a | b | c | d |`, the bar line where they meet written once; one
   with a `\rep` row is left alone.
@@ -240,10 +247,21 @@ cargo run -- check Song.tex
 - **`~` after a word in an English song**: a space. Ties are for Czech and
   Slovak; `\lrep~` and `~~~` for spacing stay.
 
+- **A missing comma, in Czech and Slovak**: a word opening a clause inside
+  a line with no comma before it (`vím že` for `vím, že`). Not after a
+  preposition (`na kterém`), nor after a particle leading into the clause
+  (`tak ať`, `jen aby`, `i když`), and not for `ale`, which inside a
+  clause is a particle.
+
 Corrections have no readability score: their `score` is 0 and their
 `grade` is `correction`, and their `category` is `restructure` or `typo`.
-On the songbook, `check` finds five songs with mixed apostrophes and one
-line to look at (Heart of Gold: "keep" beside "keeps").
+
+**Marking a finding right.** Some findings are right as they are. A line
+`% nocheck` of its own above a line silences the findings on it, and
+`% nocheck <kind>` anywhere (`% nocheck apostrophes`) those of that kind in
+the whole song. `check --json` gives each finding the edit that adds the
+mark (`dismiss`), and `apply --dismiss ID` adds it from the command line.
+A mark inside a part goes along above the line when lines are joined.
 
 The tool exits with 1 when the song could not be read or written and with 2
 when the command line is wrong, so a caller need not read the messages to

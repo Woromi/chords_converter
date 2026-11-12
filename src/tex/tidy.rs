@@ -778,7 +778,10 @@ mod syllables {
     use hyphenation::{Hyphenator as _, Language, Load, Standard};
     use std::ops::Range;
 
-    pub struct Hyphenator(Standard);
+    /// The patterns, and whether they are trusted for the start of a word's
+    /// last syllable (Czech and Slovak ones; English ones miss syllables,
+    /// "a-way").
+    pub struct Hyphenator(Standard, bool);
 
     impl Hyphenator {
         /// The patterns for a song's `lang`, if there are any.
@@ -793,7 +796,7 @@ mod syllables {
             // A chord may fall on the first or last letter's syllable, which
             // TeX's minima are there to keep a hyphen away from.
             patterns.minima = (1, 1);
-            Some(Hyphenator(patterns))
+            Some(Hyphenator(patterns, language != Language::EnglishUS))
         }
 
         /// The letter indices a syllable starts at, 0 included.
@@ -910,9 +913,41 @@ mod syllables {
                     .filter(|&s| s <= *index)
                     .max()
                     .unwrap_or(0);
-                if start == *index || word[start..*index].iter().copied().any(is_vowel) {
-                    continue;
-                }
+                // Back over consonants to the syllable's start; where the
+                // patterns find every syllable, over its vowel too: a chord
+                // drawn on the consonants that close a syllable belongs to
+                // the syllable ("schodec\[F]h" → "scho\[F]dech", the user).
+                let vowels = word[start..*index]
+                    .iter()
+                    .copied()
+                    .filter(|&c| is_vowel(c))
+                    .count();
+                // Only in the word's last syllable, with nothing but its
+                // closing consonants after the chord: the patterns miss
+                // syllables in Czech too ("u-mět"), and a chord with a vowel
+                // after it may well open one they missed.
+                let last_syllable = word[*index..].iter().all(|&c| !is_vowel(c));
+                let closing = vowels > 0
+                    && hyphenator.1
+                    && last_syllable
+                    && word[start..*index]
+                        .iter()
+                        .copied()
+                        .skip_while(|&c| !is_vowel(c))
+                        .skip_while(|&c| is_vowel(c))
+                        .all(|c| !is_vowel(c));
+                let start = if start == *index || (vowels > 0 && !closing) {
+                    // It stays, but never between the two letters of "ch".
+                    let splits_ch = *index > 0
+                        && word[*index - 1].eq_ignore_ascii_case(&'c')
+                        && word[*index].eq_ignore_ascii_case(&'h');
+                    if !splits_ch {
+                        continue;
+                    }
+                    *index - 1
+                } else {
+                    start
+                };
                 // Another chord in the way stays in the way, and so does
                 // one standing right in front of the word: the chord would
                 // land on it.
@@ -1253,6 +1288,19 @@ mod tests {
             "ni\\[E]kdo ti nepo\\[C#m]ví"
         );
         assert_eq!(tidied_line("czech", "kap\\[H7]itán"), "ka\\[H7]pitán");
+    }
+
+    #[test]
+    fn a_chord_on_the_consonants_closing_a_syllable_moves_to_its_start() {
+        // Czech patterns find every syllable: back over the vowel too.
+        assert_eq!(tidied_line("czech", "po schodec\\[F]h"), "po scho\\[F]dech");
+        assert_eq!(tidied_line("czech", "po schode\\[F]ch"), "po scho\\[F]dech");
+        // English ones miss syllables ("a-way"): only "ch" is kept whole.
+        assert_eq!(
+            tidied_line("english", "so muc\\[C]h more"),
+            "so mu\\[C]ch more"
+        );
+        assert_eq!(tidied_line("english", "awa\\[C]y"), "awa\\[C]y");
     }
 
     #[test]

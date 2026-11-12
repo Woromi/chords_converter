@@ -110,14 +110,17 @@ impl Proposal {
     /// Whether it corrects the song rather than fitting a page: what
     /// `check` lists, and `shrink` leaves out.
     pub fn is_correction(&self) -> bool {
-        matches!(self.kind, "restructure" | "typo" | "apostrophes" | "tie")
+        matches!(
+            self.kind,
+            "restructure" | "typo" | "apostrophes" | "tie" | "comma"
+        )
     }
 
     /// What a program groups it under: `fit`, `restructure` or `typo`.
     pub fn category(&self) -> &'static str {
         match self.kind {
             "restructure" => "restructure",
-            "typo" | "apostrophes" | "tie" => "typo",
+            "typo" | "apostrophes" | "tie" | "comma" => "typo",
             _ => "fit",
         }
     }
@@ -324,10 +327,12 @@ pub fn proposals(text: &str) -> Vec<Proposal> {
     proposals.extend(typos::typos(&infos, &names, scan.lang.as_deref()));
     proposals.extend(chords_off(&names, &infos, Stage::SmallPaper));
     proposals.extend(smaller_type(text, &scan, &infos));
-    proposals.extend(joined_lines(&names, &infos));
+    proposals.extend(joined_lines(&names, &infos, scan.lang.as_deref()));
 
-    // Restructuring is worth it even when it saves nothing.
+    // Restructuring is worth it even when it saves nothing; a correction a
+    // person marked right with `% nocheck` is not one.
     proposals.retain(|p| p.gain_lines > 0 || p.is_correction());
+    proposals.retain(|p| !(p.is_correction() && marked_right(text, p)));
     let rank = |p: &Proposal| {
         (
             p.stage,
@@ -935,7 +940,7 @@ fn chorus_reminders(text: &str, scan: &Scan, infos: &[PartInfo], names: &Names) 
 /// lines and nothing between them that a join would change the meaning of.
 /// Whether the joined lines fit the column is for the typesetter to say, so
 /// `suggest` offers it only after measuring (`needs_width_check`).
-fn joined_lines(names: &Names, infos: &[PartInfo]) -> Vec<Proposal> {
+fn joined_lines(names: &Names, infos: &[PartInfo], lang: Option<&str>) -> Vec<Proposal> {
     let text = names.text;
     let mut kinds: Vec<&str> = infos.iter().map(|i| i.part.kind.as_str()).collect();
     kinds.sort();
@@ -950,6 +955,9 @@ fn joined_lines(names: &Names, infos: &[PartInfo]) -> Vec<Proposal> {
         let mut edits = Vec::new();
         let mut gain = 0;
         let mut pairs = 0;
+        // Lines a comma went after, and lines that may want one.
+        let mut commas: Vec<usize> = Vec::new();
+        let mut unsure: Vec<usize> = Vec::new();
         let mut spans = Vec::new();
         for info in &parts {
             if info.part.conditional {
@@ -958,10 +966,18 @@ fn joined_lines(names: &Names, infos: &[PartInfo]) -> Vec<Proposal> {
             let body = info.part.body.clone();
             // The sung lines: byte range of the line, without its newline.
             let mut sung: Vec<Range<usize>> = Vec::new();
+            // `% nocheck` lines, whole with their newline: they go along
+            // above the joined line.
+            let mut marks: Vec<Range<usize>> = Vec::new();
             let mut at = body.start;
             for line in text[body.clone()].split_inclusive('\n') {
                 let range = at..at + line.trim_end_matches(['\n', '\r']).len();
+                let whole = at..at + line.len();
                 at += line.len();
+                if is_nocheck_mark(&text[range.clone()]) {
+                    marks.push(whole);
+                    continue;
+                }
                 if text[range.clone()].trim().is_empty() {
                     // Before the first line and after the last, the
                     // layout's own; between lines, a gap that means one.
@@ -1008,10 +1024,39 @@ fn joined_lines(names: &Names, infos: &[PartInfo]) -> Vec<Proposal> {
                     start += 1;
                     start += text[start..].len() - text[start..].trim_start().len();
                 }
+                // A comma where the language's rule wants one; where none
+                // tells, the place is named for a person to look at.
+                if !bars && let Some(at) = bare_end(text, pair[0].clone()) {
+                    let next_word = lyric_words(code_of(next));
+                    let next_word = next_word.split_whitespace().next().unwrap_or("");
+                    match typos::comma_before(lang, next_word) {
+                        Some(true) => {
+                            edits.push(Edit {
+                                span: at..at,
+                                replacement: ",".to_string(),
+                            });
+                            commas.push(line_at(text, pair[0].start));
+                        }
+                        Some(false) => {}
+                        None => unsure.push(line_at(text, pair[0].start)),
+                    }
+                }
                 edits.push(Edit {
                     span: end..start,
                     replacement: " ".to_string(),
                 });
+                // A mark between the two lines goes above them.
+                let between: String = marks
+                    .iter()
+                    .filter(|m| m.start >= end && m.end <= start)
+                    .map(|m| text[m.clone()].to_string())
+                    .collect();
+                if !between.is_empty() {
+                    edits.push(Edit {
+                        span: pair[0].start..pair[0].start,
+                        replacement: between,
+                    });
+                }
                 let chorded = |r: &Range<usize>| !chord_names(code_of(&text[r.clone()])).is_empty();
                 gain += 1;
                 // Two chord rows over two lyric rows become one of each; an
@@ -1037,8 +1082,20 @@ fn joined_lines(names: &Names, infos: &[PartInfo]) -> Vec<Proposal> {
             stage: Stage::AllPapers,
             line: first.part.line,
             description: format!(
-                "join every two lines of each {name} into one ({} lines into {pairs})",
-                pairs * 2
+                "join every two lines of each {name} into one ({} lines into {pairs}){}{}",
+                pairs * 2,
+                match commas.as_slice() {
+                    [] => String::new(),
+                    lines => format!("; a comma at the end of {}", list_lines(lines)),
+                },
+                match unsure.as_slice() {
+                    [] => String::new(),
+                    lines => format!(
+                        "; {} may want a comma at {} end",
+                        list_lines(lines),
+                        if lines.len() == 1 { "its" } else { "their" }
+                    ),
+                }
             ),
             gain_lines: gain,
             score: JOINED,
@@ -1216,6 +1273,92 @@ fn repeated_rows(text: &str, infos: &[PartInfo], names: &Names) -> Vec<Proposal>
         });
     }
     proposals
+}
+
+/// Where a comma would go at the end of a line whose words end bare (no
+/// punctuation): right after its last letter, before any chords after it.
+fn bare_end(text: &str, line: Range<usize>) -> Option<usize> {
+    let mut code = code_of(&text[line.clone()]).trim_end();
+    // Chords after the last word, and the spaces between them.
+    while code.ends_with(']')
+        && let Some(open) = code.rfind("\\[")
+    {
+        code = code[..open].trim_end();
+    }
+    let last = code.chars().next_back()?;
+    last.is_alphanumeric().then(|| line.start + code.len())
+}
+
+fn line_at(text: &str, at: usize) -> usize {
+    text[..at].matches('\n').count() + 1
+}
+
+/// "line 12", "lines 12 and 30", "lines 12, 30 and 41".
+fn list_lines(lines: &[usize]) -> String {
+    let words: Vec<String> = lines.iter().map(usize::to_string).collect();
+    match words.split_last() {
+        Some((last, [])) => format!("line {last}"),
+        Some((last, rest)) => format!("lines {} and {last}", rest.join(", ")),
+        None => String::new(),
+    }
+}
+
+/// Whether a person marked a finding right: `% nocheck` on the line above
+/// the one it is about, or `% nocheck <kind>` anywhere in the song.
+fn marked_right(text: &str, p: &Proposal) -> bool {
+    let lines: Vec<&str> = text.lines().collect();
+    let above = p.line.checked_sub(2).and_then(|i| lines.get(i));
+    let mark = |line: &str| -> Option<String> {
+        is_nocheck_mark(line).then(|| {
+            line.trim()[1..].trim_start()["nocheck".len()..]
+                .trim()
+                .to_string()
+        })
+    };
+    above
+        .and_then(|l| mark(l))
+        .is_some_and(|kind| kind.is_empty())
+        || lines
+            .iter()
+            .any(|l| mark(l).is_some_and(|kind| kind == p.kind))
+}
+
+/// The edit that marks a finding right, so `check` leaves it out from then
+/// on: `% nocheck` on a line of its own above the line it is about, or for
+/// a finding about the whole song (apostrophes, ties) `% nocheck <kind>`
+/// before its first part. `None` for a proposal that is no correction.
+pub fn dismissal(text: &str, p: &Proposal) -> Option<Edit> {
+    if !p.is_correction() {
+        return None;
+    }
+    let line_start = |line: usize| -> usize {
+        text.split_inclusive('\n')
+            .take(line.saturating_sub(1))
+            .map(str::len)
+            .sum()
+    };
+    if matches!(p.kind, "apostrophes" | "tie") {
+        let first = scan(text).parts.first()?.line;
+        return Some(Edit {
+            span: line_start(first)..line_start(first),
+            replacement: format!("% nocheck {}\n", p.kind),
+        });
+    }
+    let at = line_start(p.line);
+    let line = text[at..].lines().next().unwrap_or("");
+    let indent = &line[..line.len() - line.trim_start().len()];
+    Some(Edit {
+        span: at..at,
+        replacement: format!("{indent}% nocheck\n"),
+    })
+}
+
+/// A line of its own that tells `check` a finding is right: `% nocheck`
+/// for the line below it, `% nocheck <kind>` for the kind in the whole song.
+pub(super) fn is_nocheck_mark(line: &str) -> bool {
+    line.trim()
+        .strip_prefix('%')
+        .is_some_and(|rest| rest.trim_start().starts_with("nocheck"))
 }
 
 /// The last resort on small paper: the whole song a type size smaller
@@ -2142,6 +2285,84 @@ mod tests {
         assert!(ids.contains(&"chordsoff@24".to_string()), "{ids:?}");
         // A chord played otherwise is not one to read elsewhere.
         assert!(!ids.contains(&"chordsoff@34".to_string()), "{ids:?}");
+    }
+
+    fn czech_join(lines: &[&str]) -> (String, Proposal) {
+        let text = song(&part("\\beginverse", lines));
+        let p = proposals(&text)
+            .into_iter()
+            .find(|p| p.kind == "joinlines")
+            .unwrap();
+        (apply(&text, &[&p]).unwrap(), p)
+    }
+
+    #[test]
+    fn joined_lines_take_the_comma_the_language_wants() {
+        // Before "že": a comma, after the last word and before its chords.
+        let (out, p) = czech_join(&["\\[C]Vím to \\[G]dobře\\[Am]", "\\[F]že se vrátíš"]);
+        assert!(
+            out.contains("    \\[C]Vím to \\[G]dobře,\\[Am] \\[F]že se vrátíš\n"),
+            "{out}"
+        );
+        assert!(
+            p.description.ends_with("; a comma at the end of line 6"),
+            "{}",
+            p.description
+        );
+        // Before "a": none.
+        let (out, _) = czech_join(&["\\[C]Jdu domů", "a \\[G]zpívám"]);
+        assert!(out.contains("    \\[C]Jdu domů a \\[G]zpívám\n"), "{out}");
+        // Punctuation already there stays as it is.
+        let (out, _) = czech_join(&["\\[C]Jdu domů,", "\\[G]zpívám"]);
+        assert!(out.contains("    \\[C]Jdu domů, \\[G]zpívám\n"), "{out}");
+        // Where no rule tells, the line is named.
+        let (out, p) = czech_join(&["\\[C]Jdu domů", "\\[G]zpívám"]);
+        assert!(out.contains("    \\[C]Jdu domů \\[G]zpívám\n"), "{out}");
+        assert!(
+            p.description
+                .ends_with("; line 6 may want a comma at its end"),
+            "{}",
+            p.description
+        );
+    }
+
+    #[test]
+    fn a_finding_marked_right_is_not_found_again() {
+        let text = song(
+            &[
+                part("\\beginverse", &["\\[C]Vím že se vrátíš", "a \\[G]zpívám"]),
+                part("\\beginverse", &["\\[C]Vím že se vrátíš", "a \\[G]zpívám"]),
+            ]
+            .concat(),
+        );
+        let found: Vec<Proposal> = proposals(&text)
+            .into_iter()
+            .filter(|p| p.kind == "comma")
+            .collect();
+        assert_eq!(found.len(), 2);
+        // The mark goes on a line of its own above, indented like the line.
+        let edit = dismissal(&text, &found[0]).unwrap();
+        let mut marked = text.clone();
+        marked.replace_range(edit.span.clone(), &edit.replacement);
+        assert!(
+            marked.contains("\\beginverse\n    % nocheck\n    \\[C]Vím že"),
+            "{marked}"
+        );
+        let left: Vec<String> = proposals(&marked)
+            .into_iter()
+            .filter(|p| p.kind == "comma")
+            .map(|p| p.id)
+            .collect();
+        assert_eq!(left.len(), 1, "{left:?}");
+        // `% nocheck comma` anywhere: none of the kind.
+        let all_marked = text.replacen("\\beginverse", "% nocheck comma\n\\beginverse", 1);
+        assert!(!proposals(&all_marked).iter().any(|p| p.kind == "comma"));
+        // A mark inside a part goes along above a joined line.
+        let (out, _) = czech_join(&["\\[C]Jdu domů", "% nocheck", "a \\[G]zpívám"]);
+        assert!(
+            out.contains("    % nocheck\n    \\[C]Jdu domů a \\[G]zpívám\n"),
+            "{out}"
+        );
     }
 
     #[test]
