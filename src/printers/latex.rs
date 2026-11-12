@@ -48,6 +48,12 @@ impl SongPrinter for LatexPrinter {
                 one_line(&escape(value))
             )?;
         }
+        // The papers the song fits, last as in the songbook's songs. It is
+        // measured, never guessed (`checkpaper.py --measure … --write`),
+        // which fills this key in. It is a key, not a comment: the script
+        // would write its answer into `% pap={},` and leave it commented
+        // out. Empty, it says what is true of a draft: checked on nothing.
+        writeln!(writer, "    pap={{}},")?;
         writeln!(writer, "]")?;
         writeln!(writer)?;
 
@@ -800,6 +806,13 @@ mod tests {
         assert!(out.contains("    met={3/4},\n"));
         assert!(out.contains("    cap={2},\n"));
         assert!(!out.contains("\\capo"));
+    }
+
+    #[test]
+    fn the_papers_are_the_last_key_left_for_measuring() {
+        let out = header(&song(None, None));
+        assert!(out.contains("    pap={},\n]\n"), "{out}");
+        assert_eq!(out.matches("pap=").count(), 1);
     }
 
     #[test]
