@@ -33,6 +33,35 @@ pub struct PartSpan {
     pub line: usize,
 }
 
+/// The value of a `lang` key on a prelude line: `lang={czech}`, as the
+/// songbook writes it, or `lang=czech` and `lang = czech`, which the
+/// prelude's key=value options take as well.
+fn lang_of(code: &str) -> Option<String> {
+    for (at, _) in code.match_indices("lang") {
+        // The key itself, not the end of another word.
+        if code[..at]
+            .chars()
+            .next_back()
+            .is_some_and(|c| c.is_alphanumeric() || c == '\\')
+        {
+            continue;
+        }
+        let Some(rest) = code[at + 4..].trim_start().strip_prefix('=') else {
+            continue;
+        };
+        let rest = rest.trim_start();
+        let value = match rest.strip_prefix('{') {
+            Some(braced) => &braced[..braced.find('}')?],
+            None => rest.split([',', ']']).next().unwrap_or(""),
+        };
+        let value = value.trim();
+        if !value.is_empty() {
+            return Some(value.to_string());
+        }
+    }
+    None
+}
+
 /// A song as scanned.
 #[derive(Debug, Default)]
 pub struct Scan {
@@ -108,13 +137,8 @@ pub fn scan(text: &str) -> Scan {
         let line = raw.trim_end_matches(['\n', '\r']);
         let code = code_of(line);
 
-        if scan.lang.is_none()
-            && let Some(at) = code.find("lang={")
-        {
-            let rest = &code[at + 6..];
-            if let Some(end) = rest.find('}') {
-                scan.lang = Some(rest[..end].trim().to_string());
-            }
+        if scan.lang.is_none() {
+            scan.lang = lang_of(code);
         }
 
         let words = control_words(code);
@@ -203,6 +227,17 @@ mod tests {
     fn parts_are_found_with_their_bytes() {
         let scan = scan(SONG);
         assert_eq!(scan.lang.as_deref(), Some("czech"));
+        // With or without braces, with or without spaces, on one line with
+        // the other keys: the prelude takes them all.
+        for header in [
+            "\\beginsong{K}[by={Test}, key=C, lang=czech]",
+            "\\beginsong{K}[by={Test}, key=C, lang={czech}]",
+            "    lang = czech,",
+            "    lang = { czech },",
+        ] {
+            assert_eq!(lang_of(header).as_deref(), Some("czech"), "{header}");
+        }
+        assert_eq!(lang_of("    slang=x,"), None);
         let kinds: Vec<_> = scan.parts.iter().map(|p| p.kind.as_str()).collect();
         assert_eq!(kinds, ["verse", "chorus", "chorus"]);
 
