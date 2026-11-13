@@ -190,6 +190,13 @@ Song.tex
   (Czech `že`, `když`, `aby`, `který`, `ale`…; English "but"), none before
   `a`, `i`, `nebo` / "and", "or". Where no rule tells, there is none, and
   the description names the lines that may want one.
+  A capital the second line starts with goes lowercase when the first
+  line does not end a sentence (`.`, `!`, `?`, `…`): English sites capitalise
+  every line. It stays for "I", a word in capitals, a quotation, a word the
+  song writes with a capital mid-sentence elsewhere (a name), and in German.
+  A word the song writes lowercase nowhere else (and, in English, that is
+  not a common word like "it's" or "from") is made lowercase too, but named
+  in the description, for a person to check it is not a name.
   Instrumentals join too, bar to bar: `| a | b |` and `| c | d |` become
   `| a | b | c | d |`, the bar line where they meet written once; one
   with a `\rep` row is left alone.

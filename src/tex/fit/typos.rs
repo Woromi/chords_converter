@@ -14,7 +14,7 @@
 //!   (CLAUDE.md), never English. `\lrep~` and `~` used for spacing stay.
 
 use super::{Edit, Names, PartInfo, Proposal, Stage, code_of};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 
 /// A lyric word: its letters (chords and macros left out), and its bytes.
@@ -786,3 +786,116 @@ mod tests {
         assert!(!looks_like_a_slip("love", "hate"));
     }
 }
+
+/// What the song says about the case of its words, for joining lines:
+/// a line that goes on a sentence started on the line before often starts
+/// with a capital anyway (English sites write every line so), and joined
+/// after it, the capital would stand mid-sentence. Whether a word is a name
+/// only the song can tell, from where else it is written.
+pub(super) struct Capitals {
+    /// Words written in lowercase somewhere (lowercased).
+    lower: HashSet<String>,
+    /// Words written with a capital inside a sentence: names.
+    names: HashSet<String>,
+}
+
+pub(super) fn capitals(text: &str, infos: &[PartInfo]) -> Capitals {
+    let mut lower = HashSet::new();
+    let mut names = HashSet::new();
+    for sung in sung_lines(text, infos) {
+        for (i, word) in sung.words.iter().enumerate() {
+            let Some(first) = word.text.chars().next() else {
+                continue;
+            };
+            if first.is_lowercase() {
+                lower.insert(word.text.to_lowercase());
+            } else if i > 0 {
+                // After a sentence's end inside the line, a capital is
+                // the sentence's, not a name's.
+                let before = &text[sung.words[i - 1].span.end..word.span.start];
+                if !before.contains(['.', '!', '?', '…']) {
+                    names.insert(word.text.clone());
+                }
+            }
+        }
+    }
+    Capitals { lower, names }
+}
+
+impl Capitals {
+    /// For line `next` joined after line `first`: the edit that lowers the
+    /// capital `next` starts with, the word, and whether the song writes
+    /// the word lowercase elsewhere (if not, it may be a name nowhere else
+    /// said to be one, for a person to look at). `None` where the capital
+    /// stays: a sentence or a quotation starts there, the word is "I" or
+    /// written in capitals, or the song writes it with a capital
+    /// mid-sentence. German capitalises its nouns: nothing there.
+    pub(super) fn lowered(
+        &self,
+        text: &str,
+        first: Range<usize>,
+        next: Range<usize>,
+        lang: Option<&str>,
+    ) -> Option<(Edit, String, bool)> {
+        if lang.is_some_and(|l| l.eq_ignore_ascii_case("german")) {
+            return None;
+        }
+        // How the first line ends: chords after its last word left out,
+        // and the quotes and brackets that close it.
+        let mut end = code_of(&text[first]).trim_end();
+        while end.ends_with(']')
+            && let Some(open) = end.rfind("\\[")
+        {
+            end = end[..open].trim_end();
+        }
+        let end = end.trim_end_matches(|c: char| {
+            c.is_whitespace() || matches!(c, '}' | ')' | '"' | '\'' | '’' | '”' | '“')
+        });
+        if end.ends_with(['.', '!', '?', '…']) {
+            return None;
+        }
+        let code = code_of(&text[next.clone()]);
+        let word = words_of(code, next.start).into_iter().next()?;
+        let lead = &text[next.start..word.span.start];
+        if lead.contains("\\enquote") || lead.contains(['"', '“', '„', '\'', '‘']) {
+            return None;
+        }
+        let mut chars = word.text.chars();
+        let initial = chars.next()?;
+        if !initial.is_uppercase()
+            || chars.any(char::is_uppercase)
+            || word.text == "I"
+            || word.text.starts_with("I'")
+            || word.text.starts_with("I’")
+            || self.names.contains(&word.text)
+        {
+            return None;
+        }
+        let edit = Edit {
+            span: word.span.start..word.span.start + initial.len_utf8(),
+            replacement: initial.to_lowercase().collect(),
+        };
+        let lower = word.text.to_lowercase();
+        let sure = self.lower.contains(&lower)
+            || (lang.is_some_and(|l| l.eq_ignore_ascii_case("english"))
+                && ENGLISH_FUNCTION_WORDS.contains(&lower.replace('’', "'").as_str()));
+        Some((edit, word.text, sure))
+    }
+}
+
+/// English words that are never names, so a line starting with one needs
+/// no second look when made lowercase: articles, pronouns, prepositions,
+/// conjunctions and the common verbs (decided on Valley of the Queens,
+/// where "It's", "For" and "From" were asked about).
+const ENGLISH_FUNCTION_WORDS: &[&str] = &[
+    "a", "about", "after", "all", "an", "and", "are", "as", "at", "be", "because", "been",
+    "before", "but", "by", "can", "can't", "could", "did", "do", "don't", "down", "for", "from",
+    "had", "has", "have", "he", "he's", "her", "here", "him", "his", "how", "if", "in", "into",
+    "is", "isn't", "it", "it's", "just", "let", "let's", "like", "me", "my", "no", "not", "now",
+    "of", "oh", "on", "one", "only", "or", "our", "out", "over", "she", "she's", "so", "some",
+    "than", "that", "that's", "the", "their", "them", "then", "there", "there's", "these", "they",
+    "they're", "they've", "this", "those", "through", "till", "to", "too", "under", "until", "up",
+    "upon", "us", "was", "we", "we'll", "we're", "we've", "were", "what", "when", "where", "which",
+    "while", "who", "will", "with", "without", "won't", "would", "you", "you'll", "you're",
+    "you've", "your",
+];

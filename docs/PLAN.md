@@ -230,6 +230,13 @@ part of the identical-output check `\insertchorus` has.
          one part where the others have it before the next line's first
          (or the other way round). A finding, not a rule: none on the
          finished songbook songs, which were evened out by hand.
+   - [x] Capitals mid-sentence (the user): `join` lowers the capital a
+         joined second line starts with, unless a sentence ends before it
+         or the song shows the word is a name; unsure words are named.
+   - [ ] English line starts in lowercase, as a `check` finding (asked by
+         the user). Not for `tidy`: of 62 lowercase English line starts in
+         the songbook, many are a word split across lines (`ful\[Em]fils`)
+         or a song's own style (Hey Jude), so it is a person's call.
    - [ ] A missing `~` after a Czech one-letter word: left out, since the
          songbook ties only 249 of 1466 (lines rarely wrap). Ask the user.
    - [ ] Spelling against the Hunspell dictionary of the song's `lang`

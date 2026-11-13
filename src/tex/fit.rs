@@ -977,6 +977,7 @@ fn joined_lines(
 
     let mut proposals = Vec::new();
     let mut refused = Vec::new();
+    let case = typos::capitals(text, infos);
     'kind: for kind in kinds {
         // An instrumental's rows join bar to bar, and a row with its own
         // `\rep` would come to repeat both.
@@ -1087,6 +1088,10 @@ fn joined_lines(
         let mut pairs = 0;
         // Lines a comma went after, and lines that may want one.
         let mut commas: Vec<usize> = Vec::new();
+        // Line starts made lowercase, and the words of those the song
+        // nowhere else writes lowercase.
+        let mut lowered = 0;
+        let mut unsure_case: Vec<String> = Vec::new();
         let mut unsure: Vec<usize> = Vec::new();
         let mut spans = Vec::new();
         for (&(_, info), (part, sung, marks)) in parts.iter().zip(&lines_of) {
@@ -1143,6 +1148,16 @@ fn joined_lines(
                 }
                 // A comma where the language's rule wants one; where none
                 // tells, the place is named for a person to look at.
+                if !bars
+                    && let Some((edit, word, sure)) =
+                        case.lowered(text, pair[0].clone(), pair[1].clone(), lang)
+                {
+                    edits.push(edit);
+                    lowered += 1;
+                    if !sure && !unsure_case.contains(&word) {
+                        unsure_case.push(word);
+                    }
+                }
                 if !bars && let Some(at) = bare_end(text, pair[0].clone()) {
                     let next_word = lyric_words(code_of(next));
                     let next_word = next_word.split_whitespace().next().unwrap_or("");
@@ -1200,8 +1215,19 @@ fn joined_lines(
             stage: Stage::AllPapers,
             line: first.part.line,
             description: format!(
-                "join every two lines of each {name} into one{alone} ({} lines into {pairs}){}{}",
+                "join every two lines of each {name} into one{alone} ({} lines into {pairs}){}{}{}",
                 pairs * 2,
+                match (lowered, unsure_case.as_slice()) {
+                    (0, _) => String::new(),
+                    (n, []) => format!("; {n} line start{} made lowercase", if n == 1 { "" } else { "s" }),
+                    (n, words) => format!(
+                        "; {n} line start{} made lowercase, {} though the song nowhere else writes {} so: check {} a name",
+                        if n == 1 { "" } else { "s" },
+                        list_words(words),
+                        if words.len() == 1 { "it" } else { "them" },
+                        if words.len() == 1 { "it is not" } else { "none is" },
+                    ),
+                },
                 match commas.as_slice() {
                     [] => String::new(),
                     lines => format!("; a comma at the end of {}", list_lines(lines)),
@@ -2207,7 +2233,7 @@ mod tests {
         );
         let out = apply(&text, &[&p]).unwrap();
         assert!(
-            out.contains("    \\[C]I walk along the river Down to the old \\[C]mill\n    Waiting for the \\[Dm]morning train to come\n"),
+            out.contains("    \\[C]I walk along the river down to the old \\[C]mill\n    Waiting for the \\[Dm]morning train to come\n"),
             "{out}"
         );
         assert!(unjoinable(&text).is_empty());
@@ -2239,6 +2265,50 @@ mod tests {
         // A part of one line has nothing to pair.
         let text = song(&part("\\beginverse", &[a[0]]));
         assert_eq!(unjoinable(&text), ["verse: one line, nothing to pair"]);
+    }
+
+    #[test]
+    fn a_capital_that_goes_on_a_sentence_is_made_lowercase() {
+        let english = |text: String| text.replace("lang={czech}", "lang={english}");
+        let a = [
+            "\\[C]We walked along the river",
+            "Down to the \\[G]mill",
+            "\\[C]Then we saw the lights.",
+            "Mary was \\[G]there",
+        ];
+        let b = [
+            "\\[C]I knew the way to Mary",
+            "Waiting by the \\[G]gate",
+            "\\[C]She was going down",
+            "I was \\[G]late",
+        ];
+        let text = english(song(
+            &[part("\\beginverse", &a), part("\\beginverse", &b)].concat(),
+        ));
+        let p = join_of(&text, "verse").unwrap();
+        let out = apply(&text, &[&p]).unwrap();
+        // "down" is written lowercase elsewhere: sure.
+        assert!(out.contains("river down to the"), "{out}");
+        // After a sentence's end, and a name, and "I": as they are.
+        assert!(out.contains("lights. Mary was"), "{out}");
+        assert!(out.contains("down I was"), "{out}");
+        // Nowhere else lowercase: made so, but named.
+        assert!(out.contains("Mary waiting by"), "{out}");
+        assert!(
+            p.description.contains(
+                "; 2 line starts made lowercase, Waiting though the song nowhere else writes it so: check it is not a name"
+            ),
+            "{}",
+            p.description
+        );
+        // A quotation starts with its capital; German capitalises nouns.
+        let quoted = ["\\[C]And then he said", "\\enquote{Go \\[G]home}"];
+        let text = english(song(&part("\\beginverse", &quoted)));
+        let out = apply(&text, &[&join_of(&text, "verse").unwrap()]).unwrap();
+        assert!(out.contains("said \\enquote{Go"), "{out}");
+        let text = song(&part("\\beginverse", &a)).replace("lang={czech}", "lang={german}");
+        let out = apply(&text, &[&join_of(&text, "verse").unwrap()]).unwrap();
+        assert!(out.contains("river Down"), "{out}");
     }
 
     #[test]
