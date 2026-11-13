@@ -239,7 +239,7 @@ fn reindent(text: &str) -> Vec<Change> {
 }
 
 /// A chord written right after a word and before the space to the next one,
-/// `dál\[G] a sál`, gets a space before it: `dál \[G] a sál` (the user).
+/// `dál\[G] a les`, gets a space before it: `dál \[G] a les` (the user).
 /// Glued to the word, it belongs to neither: with `\chordsoff` the line
 /// reads differently than with chords. Chords at the end of a line, `^` and
 /// `\[]` slots, instrumentals and chords inside a word stay as they are.
@@ -1197,10 +1197,10 @@ mod tests {
 
     #[test]
     fn a_chord_between_two_words_gets_a_space_before_it() {
-        let text = "\\beginsong{T}[\n]\n\\beginverse\n    Tak jdu \\[E]dál a dál\\[G] a sál \\[D]střídá sál,\n    I re\\[Bm]member\\[Em]\\[D] when\n    na konci\\[G] \\[D]\n    compa-\\[A]ny\n\\endverse\n\\begininstrumental\n    | \\[C]\\[] | ^\\[] |\n\\endinstrumental\n\\endsong\n";
+        let text = "\\beginsong{T}[\n]\n\\beginverse\n    Tak jdu \\[E]dál a dál\\[G] a les \\[D]střídá les,\n    I re\\[Bm]turn\\[Em]\\[D] home\n    na konci\\[G] \\[D]\n    compa-\\[A]ny\n\\endverse\n\\begininstrumental\n    | \\[C]\\[] | ^\\[] |\n\\endinstrumental\n\\endsong\n";
         let (out, changes) = tidy(text);
-        assert!(out.contains("dál a dál \\[G] a sál"), "{out}");
-        assert!(out.contains("re\\[Bm]member \\[Em]\\[D] when"), "{out}");
+        assert!(out.contains("dál a dál \\[G] a les"), "{out}");
+        assert!(out.contains("re\\[Bm]turn \\[Em]\\[D] home"), "{out}");
         // At the end of a line, inside a word, in an instrumental: as is.
         assert!(out.contains("na konci\\[G] \\[D]\n"), "{out}");
         assert!(out.contains("compa-\\[A]ny\n"), "{out}");
@@ -1384,15 +1384,15 @@ mod tests {
     #[test]
     fn a_chorus_placed_right_by_hand_matches_once_the_first_is() {
         let text = song(&[
-            chorus("", "    D\\[E]o tváře\n", ""),
-            chorus("", "    \\[E]Do tváře\n", ""),
+            chorus("", "    D\\[E]o hory\n", ""),
+            chorus("", "    \\[E]Do hory\n", ""),
         ])
         .replace("english", "czech");
         let (once, _) = tidy(&text);
         assert_eq!(
             once,
             song(&[
-                chorus("", "    \\[E]Do tváře\n", ""),
+                chorus("", "    \\[E]Do hory\n", ""),
                 "\\insertchorus\n\n".into()
             ])
             .replace("english", "czech")
@@ -1402,7 +1402,7 @@ mod tests {
 
     #[test]
     fn a_move_inside_a_replaced_chorus_goes_with_it() {
-        let body = "    D\\[E]o tváře\n";
+        let body = "    D\\[E]o hory\n";
         let text = song(&[chorus("", body, ""), chorus("", body, "")]).replace("english", "czech");
         let (tidied, changes) = tidy(&text);
         // Both copies move, then the second is replaced.
@@ -1410,7 +1410,7 @@ mod tests {
         assert_eq!(
             tidied,
             song(&[
-                chorus("", "    \\[E]Do tváře\n", ""),
+                chorus("", "    \\[E]Do hory\n", ""),
                 "\\insertchorus\n\n".into()
             ])
             .replace("english", "czech")
@@ -1448,9 +1448,9 @@ mod tests {
         assert_eq!(
             tidied_line(
                 "czech",
-                "D\\[E]o tváře čas mi hl\\[E7]ubokou brázdu s\\[A]amotou"
+                "D\\[E]o hory jdu já hl\\[E7]ubokou cestou s\\[A]amotou"
             ),
-            "\\[E]Do tváře čas mi \\[E7]hlubokou brázdu \\[A]samotou"
+            "\\[E]Do hory jdu já \\[E7]hlubokou cestou \\[A]samotou"
         );
         assert_eq!(
             tidied_line("czech", "nikd\\[E]o ti nepov\\[C#m]í"),
@@ -1536,8 +1536,8 @@ mod tests {
 
     #[test]
     fn a_reminder_typed_by_hand_becomes_insertchorus_star() {
-        let full = "    \\[G]Carry out your \\[Em]task, \\[C]spheres \\role{Bird}\n    \\[F]Live out our dreams\n";
-        let typed = "    \\[G]Carry out your \\[Em]task, \\[C]spheres... \\role{Bird}\n    %\\[F]Live out our dreams\n";
+        let full = "    \\[G]Follow the long \\[Em]road, \\[C]rivers \\role{Bird}\n    \\[F]Find a way home\n";
+        let typed = "    \\[G]Follow the long \\[Em]road, \\[C]rivers... \\role{Bird}\n    %\\[F]Find a way home\n";
         let text = song(&[
             chorus("", full, ""),
             VERSE.into(),
@@ -1563,8 +1563,8 @@ mod tests {
     #[test]
     fn a_reminder_with_chordsoff_on_a_line_of_its_own_becomes_insertchorus_star() {
         // Sea of Machines: the switch on its own line is not a sung line.
-        let full = "    \\[E]I've seen the \\[B]future in a \\[F#m]dream \\[C#m] \\role{Prophet}\n    \\[A]I've seen a \\[E]sea\n";
-        let typed = "    \\chordsoff\n    \\[E]I've seen the \\[B]future in a \\[F#m]dream... \\[C#m] \\role{Prophet}\n    %\\[A]I've seen a \\[E]sea\n";
+        let full = "    \\[E]I have walked a \\[B]hundred long \\[F#m]miles \\[C#m] \\role{Prophet}\n    \\[A]I have seen the \\[E]hills\n";
+        let typed = "    \\chordsoff\n    \\[E]I have walked a \\[B]hundred long \\[F#m]miles... \\[C#m] \\role{Prophet}\n    %\\[A]I have seen the \\[E]hills\n";
         let text = song(&[chorus("", full, ""), VERSE.into(), chorus("", typed, "")]);
         let (tidied, changes) = tidy(&text);
         assert_eq!(changes.len(), 1, "{changes:?}");
@@ -1577,7 +1577,7 @@ mod tests {
             ])
         );
         // After the words, the switch would be lost with the part: it stays.
-        let late = "    \\[E]I've seen the \\[B]future in a \\[F#m]dream...\n    \\chordsoff\n";
+        let late = "    \\[E]I have walked a \\[B]hundred long \\[F#m]miles...\n    \\chordsoff\n";
         let text = song(&[chorus("", full, ""), VERSE.into(), chorus("", late, "")]);
         assert!(
             tidy(&text)
@@ -1653,12 +1653,12 @@ mod tests {
 
     #[test]
     fn a_reminder_with_chords_or_reprinted_in_full_stays() {
-        let full = "    \\[C]Fear of the \\[Dm]dark\n    \\[F]I have a phobia\n";
-        let chorded = "    \\[C]Fear of the \\[Dm]dark...\n    %\\[F]I have a phobia\n";
+        let full = "    \\[C]Down by the \\[Dm]lake\n    \\[F]I sat alone\n";
+        let chorded = "    \\[C]Down by the \\[Dm]lake...\n    %\\[F]I sat alone\n";
         let text = song(&[chorus("", full, ""), chorus("", chorded, "")]);
         assert!(tidy(&text).1.is_empty());
 
-        let typed = "    \\[C]Fear of the \\[Dm]dark...\n";
+        let typed = "    \\[C]Down by the \\[Dm]lake...\n";
         let text = song(&[
             chorus("", full, ""),
             chorus("\\chordsoff", typed, ""),
@@ -1705,7 +1705,7 @@ mod tests {
 
     #[test]
     fn dots_count_before_trailing_chords_and_a_role() {
-        assert!(ends_in_dots("never cared for what they \\[C]do... \\[A]"));
+        assert!(ends_in_dots("never asked for what they \\[C]knew... \\[A]"));
         assert!(ends_in_dots("spheres... \\role{Bird}{Ω}"));
         assert!(ends_in_dots("Mornie utúlië…"));
         assert!(!ends_in_dots("Hallelujah, hallelujah \\[C]"));

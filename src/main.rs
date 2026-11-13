@@ -520,30 +520,68 @@ fn list_proposals(
     // own command, `join`. No line they lengthen may be too wide already,
     // and none may come out too wide, on either paper.
     let mut shown: Vec<&tex::fit::Proposal> = Vec::new();
+    // For `join`: each kind of part not offered, and why, so a person can
+    // tell lines too wide from lines that could not be paired at all.
+    let mut not_joined: Vec<String> = Vec::new();
     if joins {
         for paper in ["a4", "a5"] {
             measure_on(paper)?;
         }
+        not_joined = tex::fit::unjoinable(&text);
         for p in all.iter().filter(|p| p.needs_width_check()) {
-            let lengthens_a_wide_line = measured
+            let kind = p.joined_kind().unwrap_or("part");
+            let mut wide: Vec<String> = measured
                 .values()
-                .any(|m| m.wraps.iter().any(|w| p.lengthens(w.line, w.in_chorus)));
-            if lengthens_a_wide_line {
+                .flat_map(|m| &m.wraps)
+                .filter(|w| p.lengthens(w.line, w.in_chorus))
+                .map(|w| match w.line {
+                    Some(line) => format!("line {line}"),
+                    None => "a line".to_string(),
+                })
+                .collect();
+            wide.dedup();
+            if !wide.is_empty() {
+                not_joined.push(format!(
+                    "{kind}: {} too wide already, and joined it would be longer",
+                    wide.join(", ")
+                ));
                 continue;
             }
             let joined = tex::fit::apply(&text, &[p])?;
             let after = tex::measure::measure(songbook, &joined, &["a4", "a5"])?;
-            let fits = after.iter().all(|(paper, m)| {
+            // The papers a joined line is too wide for, and those it
+            // takes more pages on.
+            let (mut wide, mut longer) = (Vec::new(), Vec::new());
+            for (paper, m) in &after {
                 let before = &measured[paper];
                 let count = |m: &tex::measure::Measured, chorus: bool| {
                     m.wraps.iter().filter(|w| w.in_chorus == chorus).count()
                 };
-                m.pages <= before.pages
-                    && count(m, false) <= count(before, false)
-                    && count(m, true) <= count(before, true)
-            });
-            if fits {
+                let paper = paper.to_uppercase();
+                if m.pages > before.pages {
+                    longer.push(paper.clone());
+                }
+                if count(m, false) > count(before, false) || count(m, true) > count(before, true) {
+                    wide.push(paper);
+                }
+            }
+            let mut worse = Vec::new();
+            if !wide.is_empty() {
+                worse.push(format!(
+                    "a joined line is too wide for {}",
+                    wide.join(" and ")
+                ));
+            }
+            if !longer.is_empty() {
+                worse.push(format!(
+                    "the song takes more pages on {}",
+                    longer.join(" and ")
+                ));
+            }
+            if worse.is_empty() {
                 shown.push(p);
+            } else {
+                not_joined.push(format!("{kind}: joined, {}", worse.join(", and ")));
             }
         }
     } else if listing == Listing::Check {
@@ -612,6 +650,7 @@ fn list_proposals(
             "measured": measured,
             "note": note,
             "proposals": proposals,
+            "not_joined": not_joined,
         });
         return write_stdout(&format!("{}\n", out));
     }
@@ -674,6 +713,7 @@ fn list_proposals(
         ));
     } else if shown.is_empty() && joins {
         out.push_str("  No lines can be joined in pairs and still fit A4 and A5.\n");
+        push_not_joined(&mut out, &not_joined);
     } else if shown.is_empty() {
         out.push_str("  Nothing left to propose.\n");
     } else {
@@ -696,12 +736,23 @@ fn list_proposals(
                 p.gain_lines
             ));
         }
+        push_not_joined(&mut out, &not_joined);
         out.push_str(&format!(
             "  Apply one with: chords_converter apply {} --id <id>, then ask again.\n",
             file.display()
         ));
     }
     write_stdout(&out)
+}
+
+/// `join`'s kinds of part left as they are, with the reason.
+fn push_not_joined(out: &mut String, not_joined: &[String]) {
+    if !not_joined.is_empty() {
+        out.push_str("  Not joined:\n");
+        for why in not_joined {
+            out.push_str(&format!("    {why}\n"));
+        }
+    }
 }
 
 /// Applies the chosen proposals to a song. The proposals are found afresh
@@ -794,12 +845,15 @@ smaller type on small paper.
 the song with the songbook's own scripts/checkpaper.py (the songbook is
 ../ZubuvZpevnik unless --songbook says otherwise) and says whether it fits.
 join offers every two lines of each part of a kind joined into one, where
-every part of the kind can take it, after typesetting the joined song to
-check no line comes out too wide on A4 or A5 (slow: a run per kind).
+every part of the kind can take it (an odd last line stays alone when every
+part has as many lines), after typesetting the joined song to check no line
+comes out too wide on A4 or A5 (slow: a run per kind); it says why a kind
+is not joined.
 check lists corrections, whether the song fits or not: a part with the
 chorus's words typed as something else may be made a chorus (then tidy
 reprints its copies); a line's copies differing in one word by a slip;
-apostrophes typed both ways; ~ in an English song; a comma missing
+apostrophes typed both ways; ~ in an English song; a chord at a line's
+end in one part and at the next line's start in the others; a comma missing
 before a Czech or Slovak clause. A line '% nocheck' above a line marks
 its findings right (apply --dismiss ID adds it), and '% nocheck KIND'
 anywhere those of a kind.

@@ -54,8 +54,8 @@ it, so it is never left half written.
   before a line's first character change, which TeX skips. On all 218
   songbook songs it sets what `latexindent -l latexindent.yaml` sets (one
   `latexindent` slip aside), without needing it installed.
-- **A chord between two words gets a space before it**: `dál\[G] a sál`
-  becomes `dál \[G] a sál`. Glued to the word before, the chord belongs to
+- **A chord between two words gets a space before it**: `dál\[G] a les`
+  becomes `dál \[G] a les`. Glued to the word before, the chord belongs to
   neither word, and with `\chordsoff` the line reads otherwise. Chords at
   the end of a line, inside a word, `^`, `\[]` slots and instrumentals stay
   as they are. On the songbook: 21 chords in 13 songs. The printer never
@@ -171,10 +171,18 @@ Song.tex
 - **Joining lines: `join`, a command of its own.** Every two lines of every
   part of a kind (all verses, say) become one: fewer, longer lines, all of
   one musical length again. It is offered only if every part of the kind
-  can be joined alike (an even number of lines, and no comment, chord
-  switch, `\textnote`, `\if…` or `\rep` before a part's last line in the
-  way), and only once the joined song is typeset with no line too wide on
-  A4 or A5 (nor one already). That is a typesetting run per kind of part,
+  can be joined alike (no comment, chord switch, `\textnote`, `\if…` or
+  `\rep` before a part's last line in the way), and only once the joined
+  song is typeset with no line too wide on A4 or A5 (nor one already).
+  Parts of an odd number of lines keep the last line alone, when every
+  part of the kind has that number and the last line is about as long as
+  two joined (at least 60% of their letters, on average): a verse of two
+  half phrases and a whole one ("I walk along the river / Down to the old mill /
+  Waiting for the morning train to come") comes out as two whole ones, while a
+  chorus ending in a short hook stays as it is. For each kind it leaves as
+  it is, `join` says why (`Not joined:`, and `not_joined` in the JSON):
+  the line counts, the line in the way, or the paper a joined line is too
+  wide for. That is a typesetting run per kind of part,
   seconds on a long song, so `shrink` leaves it out and `join` does it on
   request. Its output is `shrink`'s, and its ids work with `apply`.
   Where two lines meet and the first ends without punctuation, the
@@ -255,6 +263,14 @@ cargo run -- check Song.tex
 - **`~` after a word in an English song**: a space. Ties are for Czech and
   Slovak; `\lrep~` and `~~~` for spacing stay.
 
+- **Chords split across the lines unlike the other parts** (kind
+  `chordlines`): parts of a kind with the same chords in the same order
+  and as many lines, where one has a chord sung between two lines at the
+  end of the first and the others at the start of the second (or the
+  other way round). The split most parts share is offered to the rest
+  (the first part's on a tie). Only a chord after the last word or before
+  the first moves, and only where the others have it so; a verse may
+  really be sung differently, so it is a finding, not a rule.
 - **A missing comma, in Czech and Slovak**: a word opening a clause inside
   a line with no comma before it (`vím že` for `vím, že`). Not after a
   preposition (`na kterém`), nor after a particle leading into the clause
@@ -349,24 +365,24 @@ positioned above the lyric line it belongs to. The header, `Label: value`
 metadata block and section markers are all optional:
 
 ```
-Beatles - Let It Be
-===================
+Example Band - Morning Train
+============================
 Key:   C
 Capo:  0
 
 [Verse]
        C          G
-When I find myself in times of trouble
+When we all go to the river and back
 
 R:
        Am        G/B
-Let it be, let it be
+Row the boat, row away
 ```
 
 Sections can be marked with `[Brackets]`, with inline markers such as `R:`,
 `Ref:`, `1.`, `Intro`, `Bridge`, `Outro` (Czech and English), or with the same
 markers written in brackets of their own — `(1)`, `(R)`, `(I)`. A marker may
-share its line with what follows it — both `1. When I find myself` and
+share its line with what follows it — both `1. When we all go` and
 `Intro: | C  G | Am  F |` are understood. A blank line ends the current block.
 A block no marker named and with nothing to sing in it — a line of chords on
 its own — is read as the intro when it opens the song and as an instrumental

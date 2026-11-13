@@ -322,7 +322,7 @@ mod tests {
         let song = parse(
             "pražec 0",
             &format!(
-                "<div class=\"scs-section\" data-type=\"chorus\"><div>{}O vodě</div></div>\
+                "<div class=\"scs-section\" data-type=\"chorus\"><div>{}O lese</div></div>\
                  <div class=\"scs-section\" data-type=\"interlude\"><div>{}</div></div>\
                  <div class=\"scs-section\" data-type=\"ending\"><div>{}pam</div></div>",
                 chord("A", "m"),
@@ -369,7 +369,7 @@ mod tests {
         let song = parse(
             "",
             &format!(
-                "<div class=\"scs-section\" data-type=\"verse\"><div>{}Spatřil jsem</div></div>",
+                "<div class=\"scs-section\" data-type=\"verse\"><div>{}Šel jsem</div></div>",
                 chord("A", "mi7")
             ),
         );

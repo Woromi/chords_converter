@@ -25,7 +25,7 @@ cargo run -- <url|file.html|file.txt|-> [latex|text|debug]
 **The version in `Cargo.toml` is part of the interface.** ZubuvZpevnikUi
 runs this tool (as a git submodule, built next to the app) and checks
 `chords_converter --version` against a minimum. Raise the minor version
-(`0.10.0` → `0.11.0`) in the same commit as any change to the command line,
+(`0.11.0` → `0.12.0`) in the same commit as any change to the command line,
 the exit codes, the `Saving output to:` lines or the `shrink --json`
 format, and tell the UI (a note in its `docs/`).
 
@@ -243,6 +243,7 @@ the ones that keep the song most readable first:
 1. joining lines in pairs, every two lines of a part into one, but only if
    *every* part of that kind can be joined the same way and the longer lines
    still fit the A5 column (it keeps every word and chord where it is sung);
+   an odd last line stays alone when every part has as many lines;
 2. `\insertchorus*` for a chorus sung again (a glance back to the chorus),
    then `\chordsoffonsmallpage` on parts that reprint chords already shown
    (chords read from elsewhere, line after line), on the parts nearest

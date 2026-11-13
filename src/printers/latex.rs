@@ -607,12 +607,12 @@ mod tests {
     #[test]
     fn a_chord_in_front_of_a_quotation_is_set_inside_it() {
         let part = verse(vec![line(
-            "   \"Sir, can you help me?\"",
+            "   \"Hey, can you hear me?\"",
             &[(0, "Em"), (17, "D")],
         )]);
         assert_eq!(
             render(&part),
-            ["   \\enquote{\\[Em]Sir, can you \\[D]help me?}"]
+            ["   \\enquote{\\[Em]Hey, can you \\[D]hear me?}"]
         );
     }
 
@@ -631,14 +631,14 @@ mod tests {
     #[test]
     fn a_quotation_over_several_lines_is_a_group_as_well() {
         let part = verse(vec![
-            line("  \"Sir, can you help me?", &[(2, "Em")]),
+            line("  \"Hey, can you hear me?", &[(2, "Em")]),
             line("It's cold out here,", &[]),
             line("is there somewhere?\"", &[(19, "D")]),
         ]);
         assert_eq!(
             render(&part),
             [
-                "  \\enquote{\\[Em]Sir, can you help me?",
+                "  \\enquote{\\[Em]Hey, can you hear me?",
                 "It's cold out here,",
                 "is there somewhere?}\\[D]",
             ]
@@ -687,18 +687,18 @@ mod tests {
     #[test]
     fn chords_keep_their_place_where_no_quotation_is_in_the_way() {
         let part = verse(vec![line(
-            "She calls out to the man",
+            "She walks out to the sea",
             &[(0, "Em"), (10, "D")],
         )]);
-        assert_eq!(render(&part), ["\\[Em]She calls \\[D]out to the man"]);
+        assert_eq!(render(&part), ["\\[Em]She walks \\[D]out to the sea"]);
     }
 
     /// A chord landing on the space behind a word keeps a space of its own,
     /// so that the two do not run together.
     #[test]
     fn a_chord_on_a_space_is_kept_off_the_word_in_front_of_it() {
-        let part = verse(vec![line("She calls out to the man", &[(9, "D")])]);
-        assert_eq!(render(&part), ["She calls \\[D] out to the man"]);
+        let part = verse(vec![line("She walks out to the sea", &[(9, "D")])]);
+        assert_eq!(render(&part), ["She walks \\[D] out to the sea"]);
     }
 
     /// "N.C." is the absence of a chord rather than one to be named, and the

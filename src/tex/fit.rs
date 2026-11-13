@@ -23,6 +23,7 @@
 use super::{PartSpan, Scan, code_of, scan};
 use std::ops::Range;
 
+mod chordlines;
 mod typos;
 
 /// The paper a change acts on.
@@ -70,11 +71,19 @@ pub struct Proposal {
     /// The parts whose chord switch it changes, and to what, for checking
     /// that the proposals chosen together still keep chords spread out.
     effects: Vec<(usize, Chords)>,
-    /// For joined lines: the lines (1-based, inclusive) of the parts it
-    /// joins, and whether they are choruses. Joining is offered only once
-    /// the joined song is typeset and no line came out too wide, which
-    /// needs these to tell a line too wide already.
-    joins: Option<(Vec<(usize, usize)>, bool)>,
+    /// For joined lines, what it joins. Joining is offered only once the
+    /// joined song is typeset and no line came out too wide, which needs
+    /// these to tell a line too wide already.
+    joins: Option<Joins>,
+}
+
+/// What a proposal joining lines joins: the lines (1-based, inclusive) of
+/// its parts, whether they are choruses, and the kind in words.
+#[derive(Debug, Clone, PartialEq)]
+struct Joins {
+    parts: Vec<(usize, usize)>,
+    choruses: bool,
+    name: String,
 }
 
 /// The readability a change leaves, before its place is taken into account.
@@ -112,7 +121,7 @@ impl Proposal {
     pub fn is_correction(&self) -> bool {
         matches!(
             self.kind,
-            "restructure" | "typo" | "apostrophes" | "tie" | "comma"
+            "restructure" | "typo" | "apostrophes" | "tie" | "comma" | "chordlines"
         )
     }
 
@@ -120,7 +129,7 @@ impl Proposal {
     pub fn category(&self) -> &'static str {
         match self.kind {
             "restructure" => "restructure",
-            "typo" | "apostrophes" | "tie" | "comma" => "typo",
+            "typo" | "apostrophes" | "tie" | "comma" | "chordlines" => "typo",
             _ => "fit",
         }
     }
@@ -131,11 +140,19 @@ impl Proposal {
         self.joins.is_some()
     }
 
+    /// For joined lines, the kind of part they are joined in, in words.
+    pub fn joined_kind(&self) -> Option<&str> {
+        self.joins.as_ref().map(|j| j.name.as_str())
+    }
+
     /// Whether a line the typesetter found too wide is one this proposal
     /// would make longer still: a line of a part it joins (a chorus's
     /// line is not known, only that it is in a chorus).
     pub fn lengthens(&self, line: Option<usize>, in_chorus: bool) -> bool {
-        let Some((parts, choruses)) = &self.joins else {
+        let Some(Joins {
+            parts, choruses, ..
+        }) = &self.joins
+        else {
             return false;
         };
         match line {
@@ -325,9 +342,10 @@ pub fn proposals(text: &str) -> Vec<Proposal> {
     proposals.extend(choruses_in_disguise(&infos, &names));
     proposals.extend(repeated_rows(text, &infos, &names));
     proposals.extend(typos::typos(&infos, &names, scan.lang.as_deref()));
+    proposals.extend(chordlines::chords_across_lines(&infos, &names));
     proposals.extend(chords_off(&names, &infos, Stage::SmallPaper));
     proposals.extend(smaller_type(text, &scan, &infos));
-    proposals.extend(joined_lines(&names, &infos, scan.lang.as_deref()));
+    proposals.extend(joined_lines(&names, &infos, scan.lang.as_deref()).0);
 
     // Restructuring is worth it even when it saves nothing; a correction a
     // person marked right with `% nocheck` is not one.
@@ -934,40 +952,59 @@ fn chorus_reminders(text: &str, scan: &Scan, infos: &[PartInfo], names: &Names) 
 }
 
 /// Every two lines of every part of a kind joined into one (CLAUDE.md
-/// "Fitting the page", lever 2): fewer, longer lines, all of the same
+/// "Fitting the page", lever 1): fewer, longer lines, all of the same
 /// musical length again, and every word and chord kept. Only when it can be
-/// done to every part of the kind alike: each has an even number of sung
-/// lines and nothing between them that a join would change the meaning of.
-/// Whether the joined lines fit the column is for the typesetter to say, so
-/// `suggest` offers it only after measuring (`needs_width_check`).
-fn joined_lines(names: &Names, infos: &[PartInfo], lang: Option<&str>) -> Vec<Proposal> {
+/// done to every part of the kind alike and nothing between the lines would
+/// change its meaning joined. A part of an odd number of lines keeps its
+/// last line alone, which is how a verse of two half phrases and a whole one
+/// comes out even ("I walk along the river / Down to the old mill / Waiting
+/// for the morning train to come"), but only when every part of the kind has that
+/// number, so they all come out alike. Whether the joined lines fit the
+/// column is for the typesetter to say, so `join` offers it only after
+/// measuring (`needs_width_check`).
+///
+/// Besides the proposals, it says for each kind it could not join why not,
+/// so a person is not left to guess whether the lines were too wide.
+fn joined_lines(
+    names: &Names,
+    infos: &[PartInfo],
+    lang: Option<&str>,
+) -> (Vec<Proposal>, Vec<String>) {
     let text = names.text;
     let mut kinds: Vec<&str> = infos.iter().map(|i| i.part.kind.as_str()).collect();
     kinds.sort();
     kinds.dedup();
 
     let mut proposals = Vec::new();
+    let mut refused = Vec::new();
     'kind: for kind in kinds {
         // An instrumental's rows join bar to bar, and a row with its own
         // `\rep` would come to repeat both.
         let bars = kind.starts_with("instrumental");
-        let parts: Vec<&PartInfo> = infos.iter().filter(|i| i.part.kind == kind).collect();
-        let mut edits = Vec::new();
-        let mut gain = 0;
-        let mut pairs = 0;
-        // Lines a comma went after, and lines that may want one.
-        let mut commas: Vec<usize> = Vec::new();
-        let mut unsure: Vec<usize> = Vec::new();
-        let mut spans = Vec::new();
-        for info in &parts {
+        let name = if kind == "verse*" {
+            "unnumbered verse".to_string()
+        } else {
+            part_name(kind)
+        };
+        let mut refuse = |why: String| refused.push(format!("{name}: {why}"));
+        let parts: Vec<(usize, &PartInfo)> = infos
+            .iter()
+            .enumerate()
+            .filter(|(_, i)| i.part.kind == kind)
+            .collect();
+
+        // Each part's sung lines (byte range, without the newline) and its
+        // `% nocheck` lines (whole, with the newline: they go along above
+        // the joined line).
+        let mut lines_of = Vec::new();
+        for &(i, info) in &parts {
+            let part = &names.parts[i];
             if info.part.conditional {
+                refuse(format!("{part} is printed on one paper only (\\if…)"));
                 continue 'kind;
             }
             let body = info.part.body.clone();
-            // The sung lines: byte range of the line, without its newline.
             let mut sung: Vec<Range<usize>> = Vec::new();
-            // `% nocheck` lines, whole with their newline: they go along
-            // above the joined line.
             let mut marks: Vec<Range<usize>> = Vec::new();
             let mut at = body.start;
             for line in text[body.clone()].split_inclusive('\n') {
@@ -987,34 +1024,114 @@ fn joined_lines(names: &Names, infos: &[PartInfo], lang: Option<&str>) -> Vec<Pr
                     if text[at..body.end].trim().is_empty() {
                         break;
                     }
+                    refuse(format!(
+                        "{part} has an empty line at line {}",
+                        line_at(text, range.start)
+                    ));
                     continue 'kind;
                 }
                 sung.push(range);
             }
-            if sung.is_empty() || !sung.len().is_multiple_of(2) {
+            if sung.is_empty() {
+                refuse(format!("{part} has no lines"));
                 continue 'kind;
             }
+            lines_of.push((part, sung, marks));
+        }
+
+        let mut counts: Vec<usize> = lines_of.iter().map(|(_, sung, _)| sung.len()).collect();
+        counts.sort();
+        counts.dedup();
+        let odd = counts.iter().any(|n| n % 2 == 1);
+        if odd && counts.len() > 1 {
+            let counts: Vec<String> = counts.iter().map(|n| n.to_string()).collect();
+            refuse(format!(
+                "the parts have {} lines; an odd number pairs only when every part has the same",
+                list_words(&counts)
+            ));
+            continue;
+        }
+        if counts == [1] {
+            refuse(if parts.len() == 1 {
+                "one line, nothing to pair".to_string()
+            } else {
+                "one line each, nothing to pair".to_string()
+            });
+            continue;
+        }
+        // The line left alone has to be about as long as a joined pair, or
+        // the lines come out unequal after all (a chorus ending in a short
+        // hook sung twice). Measured in letters sung, over all the parts.
+        if odd && !bars {
+            let letters = |r: &Range<usize>| lyric_words(code_of(&text[r.clone()])).chars().count();
+            let (mut pairs, mut paired, mut alone) = (0, 0, 0);
+            for (_, sung, _) in &lines_of {
+                let (last, rest) = sung.split_last().expect("not empty");
+                alone += letters(last);
+                paired += rest.iter().map(letters).sum::<usize>();
+                pairs += rest.len() / 2;
+            }
+            let parts = lines_of.len();
+            // alone / parts < 0.6 * paired / pairs, in whole numbers.
+            if 10 * alone * pairs < 6 * paired * parts {
+                refuse(format!(
+                    "the last of its {} lines is much shorter than two joined, so the lines would come out unequal",
+                    counts[0]
+                ));
+                continue;
+            }
+        }
+
+        let mut edits = Vec::new();
+        let mut gain = 0;
+        let mut pairs = 0;
+        // Lines a comma went after, and lines that may want one.
+        let mut commas: Vec<usize> = Vec::new();
+        let mut unsure: Vec<usize> = Vec::new();
+        let mut spans = Vec::new();
+        for (&(_, info), (part, sung, marks)) in parts.iter().zip(&lines_of) {
             for (k, line) in sung.iter().enumerate() {
                 let raw = &text[line.clone()];
                 let code = code_of(raw);
-                let first_of_pair = k % 2 == 0;
                 let last = k + 1 == sung.len();
-                if code.trim().is_empty()
-                    // Joined, the next line would end up in the comment.
-                    || (first_of_pair && code.len() != raw.len())
-                    || ["textnote", "chordson", "chordsoff", "chordsoffonsmallpage"]
+                // A line with a line joined after it: the last of an odd
+                // number stays alone.
+                let joined_after = k % 2 == 0 && !last;
+                let number = line_at(text, line.start);
+                let why = if code.trim().is_empty() {
+                    Some(format!("line {number} of {part} is only a comment"))
+                } else if joined_after && code.len() != raw.len() {
+                    Some(format!(
+                        "line {number} ends in a comment, which would swallow the line joined after it"
+                    ))
+                } else if let Some(word) =
+                    ["textnote", "chordson", "chordsoff", "chordsoffonsmallpage"]
                         .iter()
-                        .any(|w| has_word(code, w))
-                    || code.contains("\\if")
-                    || code.contains("\\else")
-                    || code.contains("\\fi")
-                    // A line repeated would become two.
-                    || ((!last || bars) && has_word(code, "rep"))
+                        .find(|w| has_word(code, w))
+                        .map(|w| format!("\\{w}"))
+                        .or_else(|| {
+                            ["\\if", "\\else", "\\fi"]
+                                .iter()
+                                .find(|w| code.contains(**w))
+                                .map(|w| format!("{w}…"))
+                        })
                 {
+                    Some(format!(
+                        "line {number} holds {word}, which needs a line of its own"
+                    ))
+                } else if (!last || bars) && has_word(code, "rep") {
+                    Some(format!(
+                        "line {number} is repeated (\\rep), and joined, its neighbour would be too"
+                    ))
+                } else {
+                    None
+                };
+                if let Some(why) = why {
+                    refuse(why);
                     continue 'kind;
                 }
             }
-            for pair in sung.chunks(2) {
+            for pair in sung.chunks(2).filter(|pair| pair.len() == 2) {
                 let first = text[pair[0].clone()].trim_end();
                 let end = pair[0].start + first.len();
                 let next = &text[pair[1].clone()];
@@ -1070,11 +1187,12 @@ fn joined_lines(names: &Names, infos: &[PartInfo], lang: Option<&str>) -> Vec<Pr
             let last = text[..info.part.span.end].matches('\n').count() + 1;
             spans.push((first, last));
         }
-        let Some(first) = parts.first() else { continue };
-        let name = if kind == "verse*" {
-            "unnumbered verse".to_string()
-        } else {
-            part_name(kind)
+        let Some((_, first)) = parts.first() else {
+            continue;
+        };
+        let alone = match counts.as_slice() {
+            [n] if n % 2 == 1 => format!(", the last of its {n} lines staying alone"),
+            _ => String::new(),
         };
         proposals.push(Proposal {
             id: format!("joinlines@{}", first.part.line),
@@ -1082,7 +1200,7 @@ fn joined_lines(names: &Names, infos: &[PartInfo], lang: Option<&str>) -> Vec<Pr
             stage: Stage::AllPapers,
             line: first.part.line,
             description: format!(
-                "join every two lines of each {name} into one ({} lines into {pairs}){}{}",
+                "join every two lines of each {name} into one{alone} ({} lines into {pairs}){}{}",
                 pairs * 2,
                 match commas.as_slice() {
                     [] => String::new(),
@@ -1102,10 +1220,23 @@ fn joined_lines(names: &Names, infos: &[PartInfo], lang: Option<&str>) -> Vec<Pr
             edits,
             effects: Vec::new(),
             sources: Vec::new(),
-            joins: Some((spans, kind == "chorus")),
+            joins: Some(Joins {
+                parts: spans,
+                choruses: kind == "chorus",
+                name,
+            }),
         });
     }
-    proposals
+    (proposals, refused)
+}
+
+/// Why no kind of part had lines to join, kind by kind (`join`'s answer
+/// when it offers nothing for a kind): the reasons found before typesetting.
+pub fn unjoinable(text: &str) -> Vec<String> {
+    let scan = scan(text);
+    let infos: Vec<PartInfo> = scan.parts.iter().map(|p| info(text, p)).collect();
+    let names = Names::of(text, &scan);
+    joined_lines(&names, &infos, scan.lang.as_deref()).1
 }
 
 /// A part that may be the chorus sung again but typed as something else (a
@@ -1296,9 +1427,18 @@ fn line_at(text: &str, at: usize) -> usize {
 /// "line 12", "lines 12 and 30", "lines 12, 30 and 41".
 fn list_lines(lines: &[usize]) -> String {
     let words: Vec<String> = lines.iter().map(usize::to_string).collect();
+    match words.as_slice() {
+        [] => String::new(),
+        [one] => format!("line {one}"),
+        _ => format!("lines {}", list_words(&words)),
+    }
+}
+
+/// "3", "3 and 5", "3, 4 and 5".
+fn list_words(words: &[String]) -> String {
     match words.split_last() {
-        Some((last, [])) => format!("line {last}"),
-        Some((last, rest)) => format!("lines {} and {last}", rest.join(", ")),
+        Some((last, [])) => last.clone(),
+        Some((last, rest)) => format!("{} and {last}", rest.join(", ")),
         None => String::new(),
     }
 }
@@ -1767,9 +1907,9 @@ mod tests {
 
     #[test]
     fn apostrophes_and_punctuation_do_not_make_new_words() {
-        let typed = ["\\[F]Tomorrow I'll \\[G]still be crying,", "\\[C]a zní"];
+        let typed = ["\\[F]Tomorrow I'll \\[G]still be waiting,", "\\[C]a zní"];
         let retyped = [
-            "\\[F]Tomorrow Ill \\[G]still be crying",
+            "\\[F]Tomorrow Ill \\[G]still be waiting",
             "\\[C]a zní \\[Am]",
         ];
         let text = song(
@@ -2042,6 +2182,167 @@ mod tests {
         assert!(p.lengthens(Some(6), false));
         assert!(!p.lengthens(Some(3), false));
         assert!(!p.lengthens(None, true));
+    }
+
+    #[test]
+    fn an_odd_number_of_lines_keeps_the_last_alone_when_every_part_has_it() {
+        // Two half phrases and a whole one, in every verse alike.
+        let a = [
+            "\\[C]I walk along the river",
+            "Down to the old \\[C]mill",
+            "Waiting for the \\[Dm]morning train to come",
+        ];
+        let b = [
+            "\\[C]A quiet autumn evening",
+            "Shadows on the \\[C]hill",
+            "Waiting for the \\[Dm]morning train to come",
+        ];
+        let text = song(&[part("\\beginverse", &a), part("\\beginverse", &b)].concat());
+        let p = join_of(&text, "verse").unwrap();
+        assert!(
+            p.description
+                .contains("the last of its 3 lines staying alone (4 lines into 2)"),
+            "{}",
+            p.description
+        );
+        let out = apply(&text, &[&p]).unwrap();
+        assert!(
+            out.contains("    \\[C]I walk along the river Down to the old \\[C]mill\n    Waiting for the \\[Dm]morning train to come\n"),
+            "{out}"
+        );
+        assert!(unjoinable(&text).is_empty());
+
+        // Parts of 3 and of 5 lines would come out unlike: none, and why.
+        let five = [a[0], a[1], a[2], b[0], b[1]];
+        let text = song(&[part("\\beginverse", &a), part("\\beginverse", &five)].concat());
+        assert!(join_of(&text, "verse").is_none());
+        assert_eq!(
+            unjoinable(&text),
+            [
+                "verse: the parts have 3 and 5 lines; an odd number pairs only when every part has the same"
+            ]
+        );
+        // A short last line, a hook sung again, would stand out.
+        let hook = [
+            "\\[C]All the days I waited by the window",
+            "Counting every car that passed the gate",
+            "\\[F]Come home",
+        ];
+        let text = song(&part("\\beginchorus", &hook));
+        assert!(join_of(&text, "chorus").is_none());
+        assert_eq!(
+            unjoinable(&text),
+            [
+                "chorus: the last of its 3 lines is much shorter than two joined, so the lines would come out unequal"
+            ]
+        );
+        // A part of one line has nothing to pair.
+        let text = song(&part("\\beginverse", &[a[0]]));
+        assert_eq!(unjoinable(&text), ["verse: one line, nothing to pair"]);
+    }
+
+    #[test]
+    fn why_a_kind_is_not_joined_is_said() {
+        let commented = ["\\[C]Jedna % dvě", "\\[Am]tři"];
+        let text = song(&part("\\beginverse", &commented));
+        assert_eq!(
+            unjoinable(&text),
+            ["verse: line 6 ends in a comment, which would swallow the line joined after it"]
+        );
+    }
+
+    fn chordlines(text: &str) -> Vec<Proposal> {
+        proposals(text)
+            .into_iter()
+            .filter(|p| p.kind == "chordlines")
+            .collect()
+    }
+
+    #[test]
+    fn a_chord_after_the_last_word_goes_where_the_other_parts_have_it() {
+        let v = ["\\[C]Jedna \\[G]dvě", "\\[Am]tři čtyři \\[F]", "\\[C]pět"];
+        let w = [
+            "\\[C]Šest \\[G]sedm",
+            "\\[Am]osm devět",
+            "\\[F]deset \\[C]jedenáct",
+        ];
+        let text = song(
+            &[
+                part("\\beginverse", &v),
+                part("\\beginverse", &w),
+                part("\\beginverse", &w),
+            ]
+            .concat(),
+        );
+        // Two of three break before F: the first verse goes their way.
+        let found = chordlines(&text);
+        assert_eq!(found.len(), 1, "{found:?}");
+        let p = &found[0];
+        assert_eq!(p.grade(), "correction");
+        assert_eq!(
+            p.description,
+            "verse 1 splits its chords across the lines unlike verse 2: F from the end of line 7 to the start of line 8"
+        );
+        let out = apply(&text, &[p]).unwrap();
+        assert!(
+            out.contains("    \\[Am]tři čtyři\n    \\[F]\\[C]pět\n") == false,
+            "{out}"
+        );
+        assert!(
+            out.contains("    \\[Am]tři čtyři\n    \\[F] \\[C]pět\n"),
+            "{out}"
+        );
+        assert!(chordlines(&out).is_empty());
+
+        // The other way: a chord before the first word goes up.
+        let text = song(
+            &[
+                part("\\beginverse", &v),
+                part("\\beginverse", &v),
+                part("\\beginverse", &w),
+            ]
+            .concat(),
+        );
+        let found = chordlines(&text);
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert!(
+            found[0].description.starts_with("verse 3 splits"),
+            "{}",
+            found[0].description
+        );
+        let out = apply(&text, &[&found[0]]).unwrap();
+        assert!(
+            out.contains("    \\[Am]osm devět \\[F]\n    deset \\[C]jedenáct\n"),
+            "{out}"
+        );
+
+        // Marked right, it is not found again.
+        let edit = dismissal(&text, &found[0]).unwrap();
+        let mut marked = text.clone();
+        marked.replace_range(edit.span.clone(), &edit.replacement);
+        assert!(chordlines(&marked).is_empty());
+    }
+
+    #[test]
+    fn a_chord_sung_inside_a_line_is_not_moved() {
+        // F is sung on "čtyři" in one verse and on "deset" in the other:
+        // a different melody, maybe, and no clean move either way.
+        let v = ["\\[C]Jedna \\[G]dvě", "\\[Am]tři \\[F]čtyři", "\\[C]pět"];
+        let w = [
+            "\\[C]Šest \\[G]sedm",
+            "\\[Am]osm devět",
+            "\\[F]deset \\[C]jedenáct",
+        ];
+        let text = song(&[part("\\beginverse", &v), part("\\beginverse", &w)].concat());
+        assert!(chordlines(&text).is_empty());
+        // Different chords: nothing to compare.
+        let x = [
+            "\\[C]Šest \\[G]sedm",
+            "\\[Am]osm devět",
+            "\\[E]deset \\[C]jedenáct",
+        ];
+        let text = song(&[part("\\beginverse", &v), part("\\beginverse", &x)].concat());
+        assert!(chordlines(&text).is_empty());
     }
 
     #[test]

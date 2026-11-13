@@ -131,7 +131,7 @@ mod tests {
 
     #[test]
     fn reads_the_song_and_the_key_off_the_page() {
-        let song = parse("~     Ami\n1. Spatřil jsem kometu, oblohou letěla,");
+        let song = parse("~     Ami\n1. Šel jsem až k řece, voda v ní tekla,");
 
         assert_eq!(song.title, "A Song");
         assert_eq!(song.artist, "A Band");
@@ -142,7 +142,7 @@ mod tests {
     /// The page names the key the same way it names a chord.
     #[test]
     fn a_minor_key_is_named_the_short_way() {
-        let page = page("~ Ami\n1. Spatřil jsem kometu").replace("value=\"A\"", "value=\"Ami\"");
+        let page = page("~ Ami\n1. Šel jsem až k řece").replace("value=\"A\"", "value=\"Ami\"");
         let song = PisnickyAkordyCzParser.parse("https://pisnicky-akordy.cz/a-band/a-song", &page);
 
         assert_eq!(song.key.as_deref(), Some("Am"));
@@ -152,19 +152,19 @@ mod tests {
     fn a_chord_keeps_the_column_it_is_played_in() {
         let song = parse(
             "~     Ami            Dmi\n\
-             1. Spatřil jsem kometu, oblohou letěla,\n\
+             1. Šel jsem až k řece, voda v ní tekla,\n\
              ~     C\n   \
-             chtěl jsem jí zazpívat, ona mi zmizela,",
+             chtěl jsem ji chytit, ona mi utekla,",
         );
 
         let lines = &song.parts[0].lines;
-        assert_eq!(lines[0].lyrics, "Spatřil jsem kometu, oblohou letěla,");
+        assert_eq!(lines[0].lyrics, "Šel jsem až k řece, voda v ní tekla,");
         // "1. " gave its columns up, but the sheet's own margin went with it.
         assert_eq!(
             chords(&lines[0]),
             [("Am".to_string(), 2), ("Dm".to_string(), 17)]
         );
-        assert_eq!(lines[1].lyrics, "chtěl jsem jí zazpívat, ona mi zmizela,");
+        assert_eq!(lines[1].lyrics, "chtěl jsem ji chytit, ona mi utekla,");
         assert_eq!(chords(&lines[1]), [("C".to_string(), 2)]);
     }
 
@@ -196,20 +196,20 @@ mod tests {
     #[test]
     fn a_blank_line_starts_a_new_stanza() {
         let song = parse(
-            "~   Ami\n1. Spatřil jsem kometu\n\n\
+            "~   Ami\n1. Šel jsem až k řece\n\n\
              2. Penízky ukryl jsem do hlíny\n\n\
-             ~   Ami             Dmi\nR: O vodě, o trávě, o lese,",
+             ~   Ami             Dmi\nR: O lese, o louce, o lese,",
         );
 
         assert_eq!(song.parts.len(), 3);
         assert!(matches!(song.parts[1].part_type, PartType::Verse));
         assert!(matches!(song.parts[2].part_type, PartType::Chorus));
-        assert_eq!(song.parts[2].lines[0].lyrics, "O vodě, o trávě, o lese,");
+        assert_eq!(song.parts[2].lines[0].lyrics, "O lese, o louce, o lese,");
     }
 
     #[test]
     fn an_interlude_keeps_its_brackets_and_no_lyrics() {
-        let song = parse("~   Ami\nR: O vodě\n~   ( Dmi E )\n\n2. Penízky");
+        let song = parse("~   Ami\nR: O lese\n~   ( Dmi E )\n\n2. Penízky");
 
         let interlude = &song.parts[0].lines[1];
         assert_eq!(

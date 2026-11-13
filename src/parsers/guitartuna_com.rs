@@ -328,14 +328,14 @@ mod tests {
         let song = parse(&[part(
             "Verse 1",
             &[
-                line(&["Bb", "Eb"], "She can |kill with a smile, |"),
+                line(&["Bb", "Eb"], "She can |dance in the rain, |"),
                 line(&["Ab"], "And she can ruin your |faith"),
             ],
         )]);
 
         let verse = &song.parts[0];
         assert!(matches!(verse.part_type, PartType::Verse));
-        assert_eq!(verse.lines[0].lyrics, "She can kill with a smile,");
+        assert_eq!(verse.lines[0].lyrics, "She can dance in the rain,");
         assert_eq!(
             chords(&verse.lines[0]),
             [("Bb".to_string(), 8), ("Eb".to_string(), 27)]

@@ -5,14 +5,14 @@ use crate::models::{Chord, Line, Part, PartType, PlacedChord, Song};
 /// e.g. a line of chords positioned above the lyric line they belong to:
 ///
 /// ```text
-/// Beatles - Let It Be
-/// ===================
+/// Example Band - Morning Train
+/// ============================
 /// Key:   C
 /// Capo:  0
 ///
 /// [Verse]
 ///        C          G
-/// When I find myself in times of trouble
+/// When we all go to the river and back
 /// ```
 ///
 /// The header line, the `Label: value` metadata block and the section markers
@@ -76,7 +76,7 @@ fn parse_parts(mut lines: Vec<String>, mut idx: usize) -> Vec<Part> {
 
         // C. Inline structural marker, e.g. "R:", "1." (Czech/English).
         //    The marker is blanked out rather than cut off — "Intro: | C G |",
-        //    "R:  C      G" and "1. When I find myself" all keep the columns
+        //    "R:  C      G" and "1. When we all go" all keep the columns
         //    they were written in, so the chords still stand over the right
         //    syllables and the lines of a part still line up with each other.
         if let Some((pt, rest_at)) = detect_part_type(line) {
@@ -992,10 +992,10 @@ mod tests {
 
     #[test]
     fn reads_backslash_bass_notes_and_expands_tabs() {
-        let song = parse("Gm\tBb   C\\E\nWhen are you gonna come down\n");
+        let song = parse("Gm\tBb   C\\E\nWhen are you coming back home\n");
         let line = &song.parts[0].lines[0];
 
-        assert_eq!(line.lyrics, "When are you gonna come down");
+        assert_eq!(line.lyrics, "When are you coming back home");
         assert_eq!(chords(line), ["Gm", "Bb", "C/E"]);
         assert_eq!(columns(line), [0, 8, 13]);
     }
@@ -1016,28 +1016,28 @@ mod tests {
 
     #[test]
     fn reads_an_underlined_artist_and_title() {
-        let song = parse("Beatles - Let It Be\n===\nKey: C\nCapo: 2\n\nlyrics\n");
+        let song = parse("Example Band - Morning Train\n===\nKey: C\nCapo: 2\n\nlyrics\n");
 
-        assert_eq!(song.artist, "Beatles");
-        assert_eq!(song.title, "Let It Be");
+        assert_eq!(song.artist, "Example Band");
+        assert_eq!(song.title, "Morning Train");
         assert_eq!(song.key.as_deref(), Some("C"));
         assert_eq!(song.capo, Some(2));
     }
 
     #[test]
     fn a_marker_may_share_its_line_with_chords() {
-        let song = parse("R:  C      G\nLet it be\n");
+        let song = parse("R:  C      G\nRow the boat\n");
         let part = &song.parts[0];
 
         assert!(matches!(part.part_type, PartType::Chorus));
-        assert_eq!(part.lines[0].lyrics, "Let it be");
+        assert_eq!(part.lines[0].lyrics, "Row the boat");
         assert_eq!(chords(&part.lines[0]), ["C", "G"]);
         assert_eq!(columns(&part.lines[0]), [4, 11]);
     }
 
     #[test]
     fn reads_the_meter_out_of_the_header() {
-        let song = parse("Beatles - Let It Be\n===\nTime signature: 3 / 4\n\nlyrics\n");
+        let song = parse("Example Band - Morning Train\n===\nTime signature: 3 / 4\n\nlyrics\n");
 
         assert_eq!(song.meter.as_deref(), Some("3/4"));
     }
@@ -1050,10 +1050,10 @@ mod tests {
 
     #[test]
     fn a_verse_number_shifts_the_chords_above_it() {
-        let song = parse("     C\n1. When I find myself\n");
+        let song = parse("     C\n1. When we all go\n");
         let line = &song.parts[0].lines[0];
 
-        assert_eq!(line.lyrics, "When I find myself");
+        assert_eq!(line.lyrics, "When we all go");
         assert_eq!(columns(line), [2]);
     }
 
@@ -1092,10 +1092,10 @@ mod tests {
 
     #[test]
     fn a_marker_may_be_written_in_brackets() {
-        let song = parse("(1) When I find myself\n\n(R) Let it be\n\n(I) C  G\n");
+        let song = parse("(1) When we all go\n\n(R) Row the boat\n\n(I) C  G\n");
 
         assert!(matches!(song.parts[0].part_type, PartType::Verse));
-        assert_eq!(song.parts[0].lines[0].lyrics, "When I find myself");
+        assert_eq!(song.parts[0].lines[0].lyrics, "When we all go");
         assert!(matches!(song.parts[1].part_type, PartType::Chorus));
         assert!(matches!(song.parts[2].part_type, PartType::Intro));
         assert_eq!(chords(&song.parts[2].lines[0]), ["C", "G"]);
@@ -1103,7 +1103,7 @@ mod tests {
 
     #[test]
     fn a_block_with_nothing_to_sing_is_no_verse() {
-        let song = parse("Dmi\n\nC  G\nLet it be\n\n| C  G | Am | x2\n");
+        let song = parse("Dmi\n\nC  G\nRow the boat\n\n| C  G | Am | x2\n");
 
         assert!(matches!(song.parts[0].part_type, PartType::Intro));
         assert!(matches!(song.parts[1].part_type, PartType::Verse));
@@ -1120,13 +1120,13 @@ mod tests {
 
     #[test]
     fn the_margin_a_part_shares_is_dropped_but_its_alignment_is_not() {
-        let song = parse("      C           G\n1. When I find myself in times\n   of trouble\n");
+        let song = parse("      C           G\n1. When we all go to the river\n   and back\n");
         let lines = &song.parts[0].lines;
 
-        assert_eq!(lines[0].lyrics, "When I find myself in times");
+        assert_eq!(lines[0].lyrics, "When we all go to the river");
         assert_eq!(columns(&lines[0]), [3, 15]);
         // The second line was indented as far as the first one's marker.
-        assert_eq!(lines[1].lyrics, "of trouble");
+        assert_eq!(lines[1].lyrics, "and back");
     }
 
     #[test]

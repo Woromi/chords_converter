@@ -659,10 +659,13 @@ mod tests {
     }
 
     const TYPED: [&str; 2] = [
-        "\\[F]Tomorrow I'll \\[G]still be crying",
+        "\\[F]Tomorrow I'll \\[G]still be waiting",
         "\\[C]and so am I",
     ];
-    const RETYPED: [&str; 2] = ["\\[F]Tomorrow Ill \\[G]still be crying", "\\[C]and so am I"];
+    const RETYPED: [&str; 2] = [
+        "\\[F]Tomorrow Ill \\[G]still be waiting",
+        "\\[C]and so am I",
+    ];
 
     #[test]
     fn a_copy_differing_by_a_slip_takes_the_other_form() {
@@ -701,8 +704,8 @@ mod tests {
 
     #[test]
     fn parts_differing_in_several_lines_differ_on_purpose() {
-        let first = ["\\[C]Ty se mnou toulá krajem", "\\[G]a nikdo neví kudy"];
-        let second = ["\\[C]Ty se mnou touláš krajem", "\\[G]a nikdo nevíš kudy"];
+        let first = ["\\[C]Ty se mnou chodí lesem", "\\[G]a nikdo neví kudy"];
+        let second = ["\\[C]Ty se mnou chodíš lesem", "\\[G]a nikdo nevíš kudy"];
         let text = song(
             "czech",
             &[("\\beginchorus", &first), ("\\beginchorus", &second)],
@@ -712,7 +715,10 @@ mod tests {
 
     #[test]
     fn a_chord_inside_the_word_leaves_the_fix_to_a_person() {
-        let split = ["\\[F]Tomorrow I\\[G]ll still be crying", "\\[C]and so am I"];
+        let split = [
+            "\\[F]Tomorrow I\\[G]ll still be waiting",
+            "\\[C]and so am I",
+        ];
         let text = song(
             "english",
             &[("\\beginchorus", &TYPED), ("\\beginchorus", &split)],
@@ -760,11 +766,11 @@ mod tests {
     #[test]
     fn words_leave_chords_and_macros_out() {
         let words = words_of(
-            "\\[C]Tomorrow I'll \\[G]still be cry\\[D]ing, \\enquote{yes}",
+            "\\[C]Tomorrow I'll \\[G]still be wait\\[D]ing, \\enquote{yes}",
             0,
         );
         let texts: Vec<&str> = words.iter().map(|w| w.text.as_str()).collect();
-        assert_eq!(texts, ["Tomorrow", "I'll", "still", "be", "crying", "yes"]);
+        assert_eq!(texts, ["Tomorrow", "I'll", "still", "be", "waiting", "yes"]);
         assert!(words[1].whole);
         assert!(!words[4].whole);
         assert_eq!(&"\\[C]Tomorrow I'll"[words[1].span.clone()], "I'll");

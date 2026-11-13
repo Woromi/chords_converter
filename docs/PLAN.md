@@ -221,6 +221,15 @@ part of the identical-output check `\insertchorus` has.
    - [x] Marking a finding right (0.10.0, the user): `% nocheck` above a
          line, `% nocheck <kind>` for the song; `dismiss` in the JSON and
          `apply --dismiss`.
+   - [x] Odd line counts and reasons (0.11.0, the user, Wind of Change):
+         `join` pairs a part of an odd number of lines with the last line
+         alone when every part of the kind has that number, and says for
+         each kind it leaves why (`not_joined`).
+   - [x] Chords split across lines unlike the other parts (0.11.0, the
+         user): `check` kind `chordlines`, a chord after the last word in
+         one part where the others have it before the next line's first
+         (or the other way round). A finding, not a rule: none on the
+         finished songbook songs, which were evened out by hand.
    - [ ] A missing `~` after a Czech one-letter word: left out, since the
          songbook ties only 249 of 1466 (lines rarely wrap). Ask the user.
    - [ ] Spelling against the Hunspell dictionary of the song's `lang`

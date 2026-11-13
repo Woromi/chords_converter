@@ -251,9 +251,9 @@ mod tests {
 
     #[test]
     fn the_bass_note_of_a_chord_is_read_as_one() {
-        let song = parse("[TEXT:]\n [C/G]      [F#/Hmi]\n Povím vám jednu baladu");
+        let song = parse("[TEXT:]\n [C/G]      [F#/Hmi]\n Zpívám vám jednu píseň");
 
-        assert_eq!(song.parts[0].lines[0].lyrics, "Povím vám jednu baladu");
+        assert_eq!(song.parts[0].lines[0].lyrics, "Zpívám vám jednu píseň");
         assert_eq!(
             chords(&song.parts[0].lines[0]),
             [("C/G".to_string(), 1), ("F#/Hm".to_string(), 12)]
@@ -300,10 +300,10 @@ mod tests {
 
     #[test]
     fn a_bracketed_marker_names_the_part_it_opens() {
-        let song = parse("[TEXT:]\n(R) O vodě, o trávě\n\n(I) [A] [E]\n\n(1) Spatřil jsem");
+        let song = parse("[TEXT:]\n(R) O lese, o louce\n\n(I) [A] [E]\n\n(1) Šel jsem");
 
         assert!(matches!(song.parts[0].part_type, PartType::Chorus));
-        assert_eq!(song.parts[0].lines[0].lyrics, "O vodě, o trávě");
+        assert_eq!(song.parts[0].lines[0].lyrics, "O lese, o louce");
         assert!(matches!(song.parts[1].part_type, PartType::Intro));
         assert_eq!(chords(&song.parts[1].lines[0]).len(), 2);
         assert!(matches!(song.parts[2].part_type, PartType::Verse));
