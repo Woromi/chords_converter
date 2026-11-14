@@ -25,7 +25,7 @@ cargo run -- <url|file.html|file.txt|-> [latex|text|debug]
 **The version in `Cargo.toml` is part of the interface.** ZubuvZpevnikUi
 runs this tool (as a git submodule, built next to the app) and checks
 `chords_converter --version` against a minimum. Raise the minor version
-(`0.11.0` → `0.12.0`) in the same commit as any change to the command line,
+(`0.12.0` → `0.13.0`) in the same commit as any change to the command line,
 the exit codes, the `Saving output to:` lines or the `shrink --json`
 format, and tell the UI (a note in its `docs/`).
 
@@ -248,7 +248,9 @@ the ones that keep the song most readable first:
    then `\chordsoffonsmallpage` on parts that reprint chords already shown
    (chords read from elsewhere, line after line), on the parts nearest
    below a part showing the same chords (the second of two verses in a row
-   rather than the first after a chorus), later parts first;
+   rather than the first after a chorus), later parts first; on A4, the
+   second voice printed inline (`\iflargepaper\multivoiceinline\fi`,
+   A5 drops it anyway) where no line gets too wide;
 3. `\smalleronsmallpage` (bare form only, 8 pt; anything smaller is too small
    to play from).
 

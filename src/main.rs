@@ -528,60 +528,11 @@ fn list_proposals(
             measure_on(paper)?;
         }
         not_joined = tex::fit::unjoinable(&text);
-        for p in all.iter().filter(|p| p.needs_width_check()) {
+        for p in all.iter().filter(|p| p.kind == "joinlines") {
             let kind = p.joined_kind().unwrap_or("part");
-            let mut wide: Vec<String> = measured
-                .values()
-                .flat_map(|m| &m.wraps)
-                .filter(|w| p.lengthens(w.line, w.in_chorus))
-                .map(|w| match w.line {
-                    Some(line) => format!("line {line}"),
-                    None => "a line".to_string(),
-                })
-                .collect();
-            wide.dedup();
-            if !wide.is_empty() {
-                not_joined.push(format!(
-                    "{kind}: {} too wide already, and joined it would be longer",
-                    wide.join(", ")
-                ));
-                continue;
-            }
-            let joined = tex::fit::apply(&text, &[p])?;
-            let after = tex::measure::measure(songbook, &joined, &["a4", "a5"])?;
-            // The papers a joined line is too wide for, and those it
-            // takes more pages on.
-            let (mut wide, mut longer) = (Vec::new(), Vec::new());
-            for (paper, m) in &after {
-                let before = &measured[paper];
-                let count = |m: &tex::measure::Measured, chorus: bool| {
-                    m.wraps.iter().filter(|w| w.in_chorus == chorus).count()
-                };
-                let paper = paper.to_uppercase();
-                if m.pages > before.pages {
-                    longer.push(paper.clone());
-                }
-                if count(m, false) > count(before, false) || count(m, true) > count(before, true) {
-                    wide.push(paper);
-                }
-            }
-            let mut worse = Vec::new();
-            if !wide.is_empty() {
-                worse.push(format!(
-                    "a joined line is too wide for {}",
-                    wide.join(" and ")
-                ));
-            }
-            if !longer.is_empty() {
-                worse.push(format!(
-                    "the song takes more pages on {}",
-                    longer.join(" and ")
-                ));
-            }
-            if worse.is_empty() {
-                shown.push(p);
-            } else {
-                not_joined.push(format!("{kind}: joined, {}", worse.join(", and ")));
+            match too_wide(&text, songbook, &measured, p)? {
+                None => shown.push(p),
+                Some(why) => not_joined.push(format!("{kind}: {why}")),
             }
         }
     } else if listing == Listing::Check {
@@ -593,6 +544,26 @@ fn list_proposals(
             .iter()
             .filter(|p| !p.needs_width_check() && !p.is_correction() && stages.contains(&p.stage))
             .collect();
+        // Changes that lengthen lines (the second voice inline) only once
+        // typeset with them, so only with --measure.
+        if measure {
+            let lengthening: Vec<&tex::fit::Proposal> = all
+                .iter()
+                .filter(|p| {
+                    p.needs_width_check() && p.kind != "joinlines" && stages.contains(&p.stage)
+                })
+                .collect();
+            for paper in lengthening.iter().flat_map(|p| p.checked_papers()) {
+                measure_on(paper)?;
+            }
+            for p in lengthening {
+                if too_wide(&text, songbook, &measured, p)?.is_none() {
+                    shown.push(p);
+                }
+            }
+            // Back in the order the proposals were ranked in.
+            shown.sort_by_key(|p| all.iter().position(|q| std::ptr::eq(q, *p)));
+        }
     }
 
     if json {
@@ -745,6 +716,69 @@ fn list_proposals(
     write_stdout(&out)
 }
 
+/// Whether a change that lengthens lines makes the song worse on the
+/// papers it lengthens them on (`checked_papers`, each already in
+/// `measured`): a line it lengthens too wide already, or typeset with it,
+/// more pages or more lines too wide. `None` when it does not, otherwise
+/// why, in words.
+fn too_wide(
+    text: &str,
+    songbook: &Path,
+    measured: &BTreeMap<String, tex::measure::Measured>,
+    p: &tex::fit::Proposal,
+) -> Result<Option<String>, String> {
+    let papers = p.checked_papers();
+    let mut wide: Vec<String> = papers
+        .iter()
+        .filter_map(|paper| measured.get(*paper))
+        .flat_map(|m| &m.wraps)
+        .filter(|w| p.lengthens(w.line, w.in_chorus))
+        .map(|w| match w.line {
+            Some(line) => format!("line {line}"),
+            None => "a line".to_string(),
+        })
+        .collect();
+    wide.dedup();
+    if !wide.is_empty() {
+        return Ok(Some(format!(
+            "{} too wide already, and joined it would be longer",
+            wide.join(", ")
+        )));
+    }
+    let changed = tex::fit::apply(text, &[p])?;
+    let after = tex::measure::measure(songbook, &changed, papers)?;
+    // The papers a lengthened line is too wide for, and those it takes
+    // more pages on.
+    let (mut wide, mut longer) = (Vec::new(), Vec::new());
+    for (paper, m) in &after {
+        let before = &measured[paper];
+        let count = |m: &tex::measure::Measured, chorus: bool| {
+            m.wraps.iter().filter(|w| w.in_chorus == chorus).count()
+        };
+        let paper = paper.to_uppercase();
+        if m.pages > before.pages {
+            longer.push(paper.clone());
+        }
+        if count(m, false) > count(before, false) || count(m, true) > count(before, true) {
+            wide.push(paper);
+        }
+    }
+    let mut worse = Vec::new();
+    if !wide.is_empty() {
+        worse.push(format!(
+            "a joined line is too wide for {}",
+            wide.join(" and ")
+        ));
+    }
+    if !longer.is_empty() {
+        worse.push(format!(
+            "the song takes more pages on {}",
+            longer.join(" and ")
+        ));
+    }
+    Ok((!worse.is_empty()).then(|| format!("joined, {}", worse.join(", and "))))
+}
+
 /// `join`'s kinds of part left as they are, with the reason.
 fn push_not_joined(out: &mut String, not_joined: &[String]) {
     if !not_joined.is_empty() {
@@ -840,7 +874,8 @@ a song shorter, for a person to accept or reject, rated by how readable they lea
 poor, last resort) and most readable first: a chorus shortened to its
 reminder line, chords hidden where they repeat ones shown just before
 (the nearer, the better, and late in the song rather than early), a
-smaller type on small paper.
+smaller type on small paper, and with --measure the second voice inline on
+A4 where no line gets too wide.
 --fit a4|a5 keeps to the ones that help fit that paper; --measure typesets
 the song with the songbook's own scripts/checkpaper.py (the songbook is
 ../ZubuvZpevnik unless --songbook says otherwise) and says whether it fits.

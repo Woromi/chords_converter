@@ -84,6 +84,8 @@ struct Joins {
     parts: Vec<(usize, usize)>,
     choruses: bool,
     name: String,
+    /// The papers whose lines it lengthens, to typeset.
+    papers: &'static [&'static str],
 }
 
 /// The readability a change leaves, before its place is taken into account.
@@ -96,6 +98,10 @@ const REMINDER: u8 = 80;
 const REPEATED_ROWS: u8 = 85;
 const CHORDS_OFF: u8 = 70;
 const SMALLER_TYPE: u8 = 20;
+/// The second voice in parentheses on the main line instead of a row of its
+/// own: every word and chord stays, only which words go together is read
+/// from the brackets rather than seen.
+const SECOND_VOICE_INLINE: u8 = 85;
 /// Taken off for each line between a part without chords and the nearest
 /// part showing the same ones (decided with the user: what matters is how
 /// far the reader looks for the chords). A verse right after the one whose
@@ -138,6 +144,12 @@ impl Proposal {
     /// song was typeset with no line too wide.
     pub fn needs_width_check(&self) -> bool {
         self.joins.is_some()
+    }
+
+    /// The papers to typeset it on before offering it: those whose lines
+    /// it makes longer.
+    pub fn checked_papers(&self) -> &[&str] {
+        self.joins.as_ref().map_or(&[], |j| j.papers)
     }
 
     /// For joined lines, the kind of part they are joined in, in words.
@@ -345,6 +357,7 @@ pub fn proposals(text: &str) -> Vec<Proposal> {
     proposals.extend(chordlines::chords_across_lines(&infos, &names));
     proposals.extend(chords_off(&names, &infos, Stage::SmallPaper));
     proposals.extend(smaller_type(text, &scan, &infos));
+    proposals.extend(second_voice_inline(text, &scan, &infos));
     proposals.extend(joined_lines(&names, &infos, scan.lang.as_deref()).0);
 
     // Restructuring is worth it even when it saves nothing; a correction a
@@ -1259,6 +1272,7 @@ fn joined_lines(
                 parts: spans,
                 choruses: kind == "chorus",
                 name,
+                papers: &["a4", "a5"],
             }),
         });
     }
@@ -1582,6 +1596,132 @@ fn smaller_type(text: &str, scan: &Scan, infos: &[PartInfo]) -> Vec<Proposal> {
         sources: Vec::new(),
         joins: None,
     }]
+}
+
+/// The second voice inline on large paper: `\\multivoice{main}{second}`
+/// printed `main (second)` instead of stacked, which saves the second
+/// voice's row on every line that has one. Small paper drops the second
+/// voice by default (`a5layout.cfg`), so this is for A4 alone, and A5 must
+/// stay as it is: a song that already brings the voice back on A5
+/// (`\\multivoiceinlineonsmallpage`) gets `\\multivoiceinline` instead, any
+/// other `\\iflargepaper\\multivoiceinline\\fi` (a plain
+/// `\\multivoiceinline` would bring it back on A5 too). The lines get
+/// longer, so it is offered only once A4 is typeset with it and no line
+/// came out too wide (`checked_papers`).
+fn second_voice_inline(text: &str, scan: &Scan, infos: &[PartInfo]) -> Vec<Proposal> {
+    let codes: Vec<&str> = text.lines().map(code_of).collect();
+    if codes
+        .iter()
+        .any(|c| has_word(c, "multivoiceinline") || has_word(c, "multivoiceoff"))
+    {
+        return Vec::new();
+    }
+    // The lines with a second voice to print, one by one.
+    let mut lines = Vec::new();
+    let mut choruses = false;
+    for info in infos {
+        let body = info.part.body.clone();
+        let mut at = body.start;
+        for raw in text[body].split_inclusive('\n') {
+            let line = line_at(text, at);
+            at += raw.len();
+            if second_voices(code_of(raw)) {
+                lines.push((line, line));
+                choruses |= info.part.kind == "chorus";
+            }
+        }
+    }
+    let (Some(first), Some(&(line, _))) = (scan.parts.first(), lines.first()) else {
+        return Vec::new();
+    };
+    // The switch already there, outside comments.
+    let mut offset = 0;
+    let mut written = None;
+    for raw in text.split_inclusive('\n') {
+        if let Some(at) = code_of(raw).find("\\multivoiceinlineonsmallpage") {
+            written = Some(offset + at);
+            break;
+        }
+        offset += raw.len();
+    }
+    let edit = match written {
+        Some(at) => Edit {
+            span: at..at + "\\multivoiceinlineonsmallpage".len(),
+            replacement: "\\multivoiceinline".to_string(),
+        },
+        None => {
+            let line_start = text[..first.span.start].rfind('\n').map_or(0, |at| at + 1);
+            Edit {
+                span: line_start..line_start,
+                replacement: "\\iflargepaper\\multivoiceinline\\fi\n\n".to_string(),
+            }
+        }
+    };
+    let gain = lines.len();
+    vec![Proposal {
+        id: format!("multivoiceinline@{line}"),
+        kind: "multivoiceinline",
+        stage: Stage::AllPapers,
+        line,
+        description: format!(
+            "print the second voice in parentheses on its line on large paper, not under it: {} (A5 as it is)",
+            edit.replacement.trim_end()
+        ),
+        gain_lines: gain,
+        score: SECOND_VOICE_INLINE,
+        edits: vec![edit],
+        effects: Vec::new(),
+        sources: Vec::new(),
+        joins: Some(Joins {
+            parts: lines,
+            choruses,
+            name: "second voice".to_string(),
+            papers: &["a4"],
+        }),
+    }]
+}
+
+/// Whether a line has a `\\multivoice{main}{second}` whose second voice
+/// prints something.
+fn second_voices(code: &str) -> bool {
+    let mut rest = code;
+    while let Some(at) = rest.find("\\multivoice{") {
+        rest = &rest[at + "\\multivoice".len()..];
+        let Some(main) = group_end(rest) else {
+            return false;
+        };
+        rest = &rest[main..];
+        if !rest.starts_with('{') {
+            continue;
+        }
+        let Some(second) = group_end(rest) else {
+            return false;
+        };
+        if !rest[1..second - 1].trim().is_empty() {
+            return true;
+        }
+        rest = &rest[second..];
+    }
+    false
+}
+
+/// The length of the `{…}` group `text` starts with, braces included.
+fn group_end(text: &str) -> Option<usize> {
+    let mut depth = 0;
+    for (i, c) in text.char_indices() {
+        match c {
+            '{' => depth += 1,
+            '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(i + 1);
+                }
+            }
+            _ if depth == 0 => return None,
+            _ => {}
+        }
+    }
+    None
 }
 
 /// What a person calls each part, for the descriptions: "verse 3", as the
@@ -2214,6 +2354,47 @@ mod tests {
             == "the 2nd chorus R1 has the words of the 1st chorus R1: shorten it to \\insertchorus*[1]"));
         assert!(said.iter().any(|d| d
             == "the 2nd chorus R2 has the words of the 1st chorus R2: shorten it to \\insertchorus*[2]"));
+    }
+
+    #[test]
+    fn the_second_voice_goes_inline_on_large_paper_only() {
+        let voiced = [
+            "\\[C]Ráno \\[G]{\\multivoice{vstanu}{brzy}}",
+            "\\[Am]a půjdu \\[F]{\\multivoice{}{Hej}}",
+            "\\[C]{\\multivoice{sám}{}} domů",
+        ];
+        let text = song(&part("\\beginverse", &voiced));
+        let find = |text: &str| {
+            proposals(text)
+                .into_iter()
+                .find(|p| p.kind == "multivoiceinline")
+        };
+        let p = find(&text).unwrap();
+        // Two lines print a second voice; the third's is empty.
+        assert_eq!(p.gain_lines, 2);
+        assert_eq!(p.checked_papers(), ["a4"]);
+        assert!(p.lengthens(Some(6), false) && !p.lengthens(Some(8), false));
+        let out = apply(&text, &[&p]).unwrap();
+        assert!(
+            out.contains("]\n\n\\iflargepaper\\multivoiceinline\\fi\n\n\\beginverse"),
+            "{out}"
+        );
+
+        // A song that shows it inline on A5 already: inline everywhere.
+        let shown = text.replace(
+            "\\beginverse",
+            "\\multivoiceinlineonsmallpage\n\n\\beginverse",
+        );
+        let out = apply(&shown, &[&find(&shown).unwrap()]).unwrap();
+        assert!(
+            out.contains("\n\\multivoiceinline\n\n\\beginverse"),
+            "{out}"
+        );
+        // Inline already, or the voice dropped on purpose: nothing.
+        for done in ["\\multivoiceinline", "\\multivoiceoff"] {
+            let text = text.replace("\\beginverse", &format!("{done}\n\\beginverse"));
+            assert!(find(&text).is_none(), "{done}");
+        }
     }
 
     fn join_of(text: &str, kind: &str) -> Option<Proposal> {

@@ -233,6 +233,12 @@ part of the identical-output check `\insertchorus` has.
    - [x] Capitals mid-sentence (the user): `join` lowers the capital a
          joined second line starts with, unless a sentence ends before it
          or the song shows the word is a name; unsure words are named.
+   - [x] The second voice inline on A4 (0.12.0, the user): `shrink`
+         kind `multivoiceinline`, score 85, checked by typesetting A4
+         with `--measure`.
+   - [ ] The second voice back on A5 (asked by the user, form: inline,
+         `\multivoiceinlineonsmallpage`). Not decided where: it adds to
+         A5, so it needs typesetting, which `tidy` never does.
    - [ ] English line starts in lowercase, as a `check` finding (asked by
          the user). Not for `tidy`: of 62 lowercase English line starts in
          the songbook, many are a word split across lines (`ful\[Em]fils`)

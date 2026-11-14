@@ -149,9 +149,21 @@ Song.tex
   |---|---|---|
   | join lines in pairs | 90 | every word and chord stays where it is sung |
   | an instrumental's row played again, once with `\rep{n}` | 85 | nothing looked up elsewhere, only counted |
+  | the second voice inline on A4 | 85 | every word and chord kept; which words go together read from the brackets |
   | `\insertchorus*` | 80 | one glance back to the chorus, and back |
   | `\chordsoff`, `\chordsoffonsmallpage` | 70 | words read here, chords somewhere else, line after line |
   | `\smalleronsmallpage` | 20 | the whole song harder to read |
+
+  The second voice inline: A4 stacks `\multivoice{main}{second}` in a
+  row of its own under the line, and `\multivoiceinline` prints it
+  `main (second)` on the line instead. A5 drops the second voice by
+  default (`a5layout.cfg`), so the proposal leaves A5 as it is:
+  `\iflargepaper\multivoiceinline\fi` after the prelude, or, in a song
+  that brings the voice back on A5 with `\multivoiceinlineonsmallpage`,
+  that switch made `\multivoiceinline`. The lines get longer, so it is
+  offered only with `--measure`, once A4 is typeset with it and no line
+  came out too wide and no page was added (California Dreamin' is
+  refused: two lines would wrap).
 
   Where chords go off counts too. A part without chords is read with the
   chords of the nearest part before it that shows the same ones, so it
