@@ -54,14 +54,14 @@ it, so it is never left half written.
   before a line's first character change, which TeX skips. On all 218
   songbook songs it sets what `latexindent -l latexindent.yaml` sets (one
   `latexindent` slip aside), without needing it installed.
-- **A chord between two words gets a space before it**: `dál\[G] a les`
-  becomes `dál \[G] a les`. Glued to the word before, the chord belongs to
-  neither word, and with `\chordsoff` the line reads otherwise. So does a
-  chord after the last word of a line, `vzít\[D]` → `vzít \[D]`, as the
-  songbook writes trailing chords (also before `\rrep` or `\rep{n}`).
-  Chords inside a word, `^`, `\[]` slots and instrumentals stay as they
-  are. On the songbook: 21 chords between words, 123 at line ends. The
-  printer never writes it this way in the first place.
+- **A chord ending a word gets a space before it**, always: `dál\[G] a
+  les` → `dál \[G] a les`, `vzít\[D]` → `vzít \[D]`. Glued to the word,
+  the chord belongs to no syllable, and with `\chordsoff` the line reads
+  otherwise. The word's punctuation goes before the chord (`šel\[D],` →
+  `šel, \[D]`), or the lyrics would print `šel ,`. Chords inside a word
+  or inside a `{…}` group, and instrumentals, stay as they are. On the
+  songbook: 135 chords. The printer never writes it this way in the first
+  place.
 - **A one-letter word is tied to the next in Czech and Slovak** (`lang`
   `czech` or `slovak`): `v lese` → `v~lese`, `a když` → `a~když`, for
   `a i k o s u v z` in either case, as Czech typography keeps them off

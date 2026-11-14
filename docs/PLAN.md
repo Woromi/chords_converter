@@ -255,9 +255,10 @@ part of the identical-output check `\insertchorus` has.
          it clean", though lines rarely wrap): `tidy` ties it, in Czech
          and Slovak songs; 1031 songbook lines. A tie before a chord
          (`a~\[C]zem`) prints pixel-identical.
-   - [x] A chord after the last word of a line gets a space before it
-         (`vzít\[D]` → `vzít \[D]`, the user), like trailing chords; 123
-         in the songbook.
+   - [x] Any chord ending a word gets a space before it (`vzít\[D]` →
+         `vzít \[D]`, the user: "always, no exceptions"); punctuation after
+         it goes before it (`šel\[D],` → `šel, \[D]`). 135 in the
+         songbook.
    - [ ] Spelling against the Hunspell dictionary of the song's `lang`
          (installed: `/usr/share/hunspell`), listed, never fixed.
    - [ ] Re-breaking lines at other points stays a human judgement;

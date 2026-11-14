@@ -244,14 +244,14 @@ fn reindent(text: &str) -> Vec<Change> {
     }]
 }
 
-/// A chord written right after a word and before the space to the next one,
-/// `dál\[G] a les`, gets a space before it: `dál \[G] a les` (the user).
-/// Glued to the word, it belongs to neither: with `\chordsoff` the line
-/// reads differently than with chords. So does one after the last word of a
-/// line, `vzít\[D]`, which the songbook writes `vzít \[D]` like the other
-/// trailing chords (the user), with any chords, `\rrep` or `\rep{n}` after
-/// it. `^` and `\[]` slots, instrumentals and chords inside a word stay as
-/// they are.
+/// A chord glued to the end of a word gets a space before it, always (the
+/// user): `dál\[G] a les` → `dál \[G] a les`, `vzít\[D]` → `vzít \[D]`.
+/// Glued to the word, it belongs to no syllable, and with `\chordsoff` the
+/// line reads otherwise. Punctuation after the chord goes before it
+/// (`slovo\[G],` → `slovo, \[G]`), so no space prints before the comma. A
+/// chord inside a word (`compa\[A]ny`) or a group (`\multivoice{…\[G]}`,
+/// where the space would print inside the brackets) and the bars of
+/// instrumentals stay as they are.
 fn chords_between_words(text: &str, scan: &super::Scan) -> Vec<Change> {
     let mut changes = Vec::new();
     for part in &scan.parts {
@@ -279,25 +279,18 @@ fn chords_between_words(text: &str, scan: &super::Scan) -> Vec<Change> {
                     !c.is_whitespace() && !matches!(c, ']' | '{' | '~' | '|' | '^' | '(')
                 });
                 let group = &code[start..end];
+                // At the end of the word: the line or a space follows, maybe
+                // after the word's punctuation, which goes before the chord
+                // (a space before it would print `slovo ,`).
                 let rest = &code[end..];
-                let spaced = rest.trim_start();
-                let text_after = rest.starts_with(' ')
-                    && !spaced.is_empty()
-                    && (!spaced.starts_with('\\')
-                        || spaced.starts_with("\\enquote")
-                        || spaced.starts_with("\\multivoice"));
-                let at_end = line_end(rest);
-                if glued && (text_after || at_end) && !group.contains("\\[]") {
-                    let place = if at_end {
-                        "follows the last word"
-                    } else {
-                        "stands between two words"
-                    };
+                let punct = rest.len() - rest.trim_start_matches(PUNCTUATION).len();
+                let word_end = rest[punct..].chars().next().is_none_or(char::is_whitespace);
+                if glued && word_end {
                     changes.push(Change {
-                        span: at + start..at + start,
-                        replacement: " ".to_string(),
+                        span: at + start..at + end + punct,
+                        replacement: format!("{} {group}", &rest[..punct]),
                         line,
-                        description: format!("{group} {place}: a space before it"),
+                        description: format!("{group} ends a word: a space before it"),
                         removed_lines: 0,
                     });
                 }
@@ -308,27 +301,8 @@ fn chords_between_words(text: &str, scan: &super::Scan) -> Vec<Change> {
     changes
 }
 
-/// Whether nothing but chords and repeat marks follow on the line.
-fn line_end(mut rest: &str) -> bool {
-    loop {
-        rest = rest.trim_start();
-        let skip = if rest.starts_with("\\[") {
-            rest.find(']').map(|close| close + 1)
-        } else if rest.starts_with("\\rep{") {
-            rest.find('}').map(|close| close + 1)
-        } else if rest.starts_with("\\rrep")
-            && !rest[5..].starts_with(|c: char| c.is_ascii_alphabetic())
-        {
-            Some(5)
-        } else {
-            None
-        };
-        match skip {
-            Some(n) => rest = &rest[n..],
-            None => return rest.is_empty(),
-        }
-    }
-}
+/// What may end a word after its last letter.
+const PUNCTUATION: [char; 9] = ['.', ',', ';', ':', '!', '?', '…', '"', '“'];
 
 /// The one-letter prepositions and conjunctions of Czech and Slovak, which
 /// typography keeps off the end of a line.
@@ -1400,17 +1374,17 @@ mod tests {
     }
 
     #[test]
-    fn a_chord_after_the_last_word_gets_a_space_before_it() {
+    fn a_chord_ending_a_word_always_gets_a_space_before_it() {
         for (line, spaced) in [
             ("jsem šel\\[D]", "jsem šel \\[D]"),
             ("jsem šel\\[D] \\rrep", "jsem šel \\[D] \\rrep"),
             (
-                "jsem šel\\[D]\\[G] \\rep{2}",
-                "jsem šel \\[D]\\[G] \\rep{2}",
+                "jsem šel\\[D]\\[G] \\textnote{x}",
+                "jsem šel \\[D]\\[G] \\textnote{x}",
             ),
             ("jsem šel \\[D]", "jsem šel \\[D]"),
-            // Before a word or a macro other than a repeat: not the end.
-            ("jsem šel\\[D] \\textnote{x}", "jsem šel\\[D] \\textnote{x}"),
+            ("jsem šel\\[D], a ty", "jsem šel, \\[D] a ty"),
+            ("jsem šel\\[D]?!", "jsem šel?! \\[D]"),
         ] {
             assert_eq!(tidied_line("english", line), spaced);
         }
