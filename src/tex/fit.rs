@@ -852,8 +852,24 @@ fn chorus_reminders(text: &str, scan: &Scan, infos: &[PartInfo], names: &Names) 
         REMINDER - early(k, sung.len())
     };
 
+    // The chorus a copy at `at` would be the reminder of: the latest of its
+    // number (`\insertchorus*[2]` repeats the latest chorus 2), or for an
+    // unnumbered one the latest of all, as a plain `\insertchorus*` does.
+    let latest_of = |at: usize, number: Option<u32>| {
+        choruses
+            .iter()
+            .rev()
+            .copied()
+            .filter(|&i| infos[i].part.span.end <= at)
+            .find(|&i| number.is_none() || infos[i].part.number == number)
+    };
+
     let mut proposals = Vec::new();
-    for pair in choruses.windows(2) {
+    for &j in choruses.iter().skip(1) {
+        let Some(i) = latest_of(infos[j].part.span.start, infos[j].part.number) else {
+            continue;
+        };
+        let pair = [i, j];
         let (latest, repeat) = (&infos[pair[0]], &infos[pair[1]]);
         // The copy dropped would no longer feed a later chorus that replays
         // its chords.
@@ -895,7 +911,7 @@ fn chorus_reminders(text: &str, scan: &Scan, infos: &[PartInfo], names: &Names) 
             stage: Stage::AllPapers,
             line: repeat.part.line,
             description: format!(
-                "{} has the words of {}: shorten it to \\insertchorus*",
+                "{} has the words of {}: shorten it to {star}",
                 names.parts[pair[1]], names.parts[pair[0]]
             ),
             gain_lines: (repeat.lyric_rows + shown_rows).saturating_sub(1),
@@ -911,19 +927,12 @@ fn chorus_reminders(text: &str, scan: &Scan, infos: &[PartInfo], names: &Names) 
     }
 
     // A full reprint becomes the reminder of what it reprints.
-    let latest_before = |at: usize| {
-        choruses
-            .iter()
-            .rev()
-            .map(|&i| &infos[i])
-            .find(|info| info.part.span.end <= at)
-    };
     for (r, (span, _)) in scan.chorus_repeats.iter().enumerate() {
         let written = &text[span.clone()];
         if written.starts_with("\\insertchorus*") {
             continue;
         }
-        let Some(latest) = latest_before(span.start) else {
+        let Some(latest) = latest_of(span.start, repeat_number(written)).map(|i| &infos[i]) else {
             continue;
         };
         let rows = latest.lyric_rows + latest.chorded_rows;
@@ -2179,6 +2188,32 @@ mod tests {
                 .any(|d| d.starts_with("the 3rd chorus has the words of the 1st chorus")),
             "{said:?}"
         );
+    }
+
+    #[test]
+    fn a_numbered_chorus_typed_again_gets_its_numbered_reminder() {
+        let first = ["\\[C]Jedna \\[G]dvě", "\\[Am]tři \\[F]čtyři"];
+        let second = ["\\[Am]Pět \\[G]šest", "\\[F]sedm \\[E]osm"];
+        let text = song(
+            &[
+                part("\\beginchorus[1]", &first),
+                part("\\beginchorus[2]", &second),
+                part("\\beginverse", &V),
+                part("\\beginchorus[1]", &first),
+                part("\\beginchorus[2]", &second),
+            ]
+            .concat(),
+        );
+        let said: Vec<String> = proposals(&text)
+            .into_iter()
+            .filter(|p| p.kind == "insertchorus*")
+            .map(|p| p.description)
+            .collect();
+        assert_eq!(said.len(), 2, "{said:?}");
+        assert!(said.iter().any(|d| d
+            == "the 2nd chorus R1 has the words of the 1st chorus R1: shorten it to \\insertchorus*[1]"));
+        assert!(said.iter().any(|d| d
+            == "the 2nd chorus R2 has the words of the 1st chorus R2: shorten it to \\insertchorus*[2]"));
     }
 
     fn join_of(text: &str, kind: &str) -> Option<Proposal> {

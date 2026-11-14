@@ -437,14 +437,30 @@ fn repeated_choruses(text: &str, scan: &Scan) -> Vec<Change> {
     }
 
     let mut changes = Vec::new();
+    // The chorus written out last, and the last of each number: a copy of
+    // chorus 2 is compared with the latest chorus 2 (`\insertchorus[2]`
+    // reprints that one), an unnumbered one with the latest of all.
     let mut latest: Option<&PartSpan> = None;
+    let mut by_number: Vec<(u32, &PartSpan)> = Vec::new();
     for &repeat in &choruses {
-        let Some((latest, setup)) =
-            latest.and_then(|latest| Some((latest, reprint_setup(text, latest, repeat)?)))
+        let of_number = match repeat.number {
+            Some(n) => by_number
+                .iter()
+                .rev()
+                .find(|(m, _)| *m == n)
+                .map(|(_, p)| *p),
+            None => latest,
+        };
+        let Some((latest_one, setup)) =
+            of_number.and_then(|l| Some((l, reprint_setup(text, l, repeat)?)))
         else {
             latest = Some(repeat);
+            if let Some(n) = repeat.number {
+                by_number.push((n, repeat));
+            }
             continue;
         };
+        let latest = latest_one;
         let number = repeat.number.map(|n| n.to_string()).unwrap_or_default();
         let replacement = match (&setup, repeat.number) {
             (None, Some(n)) => format!("\\insertchorus[{n}]"),
@@ -1128,6 +1144,24 @@ mod tests {
     }
 
     const VERSE: &str = "\\beginverse\n    \\[C]A verse\n\\endverse\n\n";
+
+    #[test]
+    fn a_numbered_chorus_is_compared_with_the_latest_of_its_number() {
+        let other = "    \\[Am]Another \\[G]one\n";
+        let text = song(&[
+            chorus("[1]", BODY, ""),
+            chorus("[2]", other, ""),
+            VERSE.into(),
+            chorus("[1]", BODY, ""),
+            chorus("[2]", other, ""),
+        ]);
+        let (out, changes) = tidy(&text);
+        assert_eq!(changes.len(), 2, "{changes:?}");
+        assert!(
+            out.contains("\\endverse\n\n\\insertchorus[1]\n\n\\insertchorus[2]\n"),
+            "{out}"
+        );
+    }
     const BODY: &str = "    \\[C]Hello \\[G]there,\n    \\[F]hello\n";
 
     #[test]
