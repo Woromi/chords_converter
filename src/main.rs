@@ -872,7 +872,8 @@ to the draft.
 shrink (until 0.6.0 suggest, which still works) lists changes that make
 a song shorter, for a person to accept or reject, rated by how readable they leave the song (0-100: good, fair,
 poor, last resort) and most readable first: a chorus shortened to its
-reminder line, chords hidden where they repeat ones shown just before
+reminder line, chords hidden inside a part whose lines repeat its first
+lines' chords, chords hidden where they repeat ones shown just before
 (the nearer, the better, and late in the song rather than early), a
 smaller type on small paper, and with --measure the second voice inline on
 A4 where no line gets too wide.

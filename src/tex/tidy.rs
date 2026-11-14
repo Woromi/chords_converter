@@ -38,6 +38,12 @@ pub fn tidy(text: &str) -> (String, Vec<Change>) {
     let text = apart.as_str();
     spaces.extend(between);
 
+    // Ties after one-letter words, on the same line: no line comes or goes.
+    let ties = czech_ties(text, &scan(text));
+    let tied = apply(text, &ties);
+    let text = tied.as_str();
+    spaces.extend(ties);
+
     // The indentation, as the songbook's latexindent sets it: an editor
     // breaks it, and it prints nothing. No line comes or goes either.
     let indents = reindent(text);
@@ -241,8 +247,11 @@ fn reindent(text: &str) -> Vec<Change> {
 /// A chord written right after a word and before the space to the next one,
 /// `dál\[G] a les`, gets a space before it: `dál \[G] a les` (the user).
 /// Glued to the word, it belongs to neither: with `\chordsoff` the line
-/// reads differently than with chords. Chords at the end of a line, `^` and
-/// `\[]` slots, instrumentals and chords inside a word stay as they are.
+/// reads differently than with chords. So does one after the last word of a
+/// line, `vzít\[D]`, which the songbook writes `vzít \[D]` like the other
+/// trailing chords (the user), with any chords, `\rrep` or `\rep{n}` after
+/// it. `^` and `\[]` slots, instrumentals and chords inside a word stay as
+/// they are.
 fn chords_between_words(text: &str, scan: &super::Scan) -> Vec<Change> {
     let mut changes = Vec::new();
     for part in &scan.parts {
@@ -277,12 +286,18 @@ fn chords_between_words(text: &str, scan: &super::Scan) -> Vec<Change> {
                     && (!spaced.starts_with('\\')
                         || spaced.starts_with("\\enquote")
                         || spaced.starts_with("\\multivoice"));
-                if glued && text_after && !group.contains("\\[]") {
+                let at_end = line_end(rest);
+                if glued && (text_after || at_end) && !group.contains("\\[]") {
+                    let place = if at_end {
+                        "follows the last word"
+                    } else {
+                        "stands between two words"
+                    };
                     changes.push(Change {
                         span: at + start..at + start,
                         replacement: " ".to_string(),
                         line,
-                        description: format!("{group} stands between two words: a space before it"),
+                        description: format!("{group} {place}: a space before it"),
                         removed_lines: 0,
                     });
                 }
@@ -291,6 +306,146 @@ fn chords_between_words(text: &str, scan: &super::Scan) -> Vec<Change> {
         }
     }
     changes
+}
+
+/// Whether nothing but chords and repeat marks follow on the line.
+fn line_end(mut rest: &str) -> bool {
+    loop {
+        rest = rest.trim_start();
+        let skip = if rest.starts_with("\\[") {
+            rest.find(']').map(|close| close + 1)
+        } else if rest.starts_with("\\rep{") {
+            rest.find('}').map(|close| close + 1)
+        } else if rest.starts_with("\\rrep")
+            && !rest[5..].starts_with(|c: char| c.is_ascii_alphabetic())
+        {
+            Some(5)
+        } else {
+            None
+        };
+        match skip {
+            Some(n) => rest = &rest[n..],
+            None => return rest.is_empty(),
+        }
+    }
+}
+
+/// The one-letter prepositions and conjunctions of Czech and Slovak, which
+/// typography keeps off the end of a line.
+const ONE_LETTER: &str = "aikosuvzAIKOSUVZ";
+
+/// A one-letter preposition or conjunction in a Czech or Slovak song gets a
+/// tie to the next word, `v~lese`, `a~když` (the user): Czech typography
+/// keeps it off the end of a line. The songbook's lines rarely wrap, so it
+/// seldom prints differently; it keeps the songs alike. Before a chord the
+/// tie goes before the chord, `v~\[G]lese`, as the songbook writes it.
+/// Only a word that follows on the same line is tied to; instrumentals,
+/// chord names and control words (`\v{c}`) are left alone.
+fn czech_ties(text: &str, scan: &Scan) -> Vec<Change> {
+    if !matches!(scan.lang.as_deref(), Some("czech" | "slovak")) {
+        return Vec::new();
+    }
+    let mut changes = Vec::new();
+    for part in &scan.parts {
+        if part.kind.starts_with("instrumental") {
+            continue;
+        }
+        let mut at = part.body.start;
+        for raw in text[part.body.clone()].split_inclusive('\n') {
+            let code = code_of(raw);
+            let line = text[..at].matches('\n').count() + 1;
+            let mut ties = Vec::new();
+            let mut tied = Vec::new();
+            let mut prev: Option<char> = None;
+            let mut i = 0;
+            while i < code.len() {
+                let rest = &code[i..];
+                let c = rest.chars().next().unwrap();
+                // A chord or a `^` stands for one: the word around it goes
+                // on as if it were not there (`D\\[E]o` is one word).
+                if rest.starts_with("\\[") {
+                    i += rest.find(']').map_or(rest.len(), |close| close + 1);
+                    continue;
+                }
+                if c == '^' {
+                    i += 1;
+                    continue;
+                }
+                if c == '\\' {
+                    // A control word or symbol: skipped.
+                    let len = {
+                        let after = &rest[1..];
+                        let letters = after.len()
+                            - after
+                                .trim_start_matches(|c: char| c.is_ascii_alphabetic())
+                                .len();
+                        // `\v` and `\enquote`, or `\%` and `\ `.
+                        1 + match letters {
+                            0 => after.chars().next().map_or(0, char::len_utf8),
+                            n => n,
+                        }
+                    };
+                    prev = rest[..len].chars().next_back();
+                    i += len;
+                    continue;
+                }
+                let starts_word = prev.is_none_or(|p| {
+                    p.is_whitespace() || matches!(p, '~' | '(' | '{' | '„' | '"' | '‚')
+                });
+                if starts_word && ONE_LETTER.contains(c) {
+                    let after = &rest[1..];
+                    let gap = after.len() - after.trim_start_matches([' ', '\t']).len();
+                    if gap > 0 && word_follows(&after[gap..]) {
+                        ties.push(at + i + 1..at + i + 1 + gap);
+                        tied.push(c.to_string());
+                    }
+                }
+                prev = Some(c);
+                i += c.len_utf8();
+            }
+            // One change for the line, from the first tie to the last.
+            if let (Some(first), Some(last)) = (ties.first(), ties.last()) {
+                let span = first.start..last.end;
+                let mut replacement = String::new();
+                let mut from = span.start;
+                for tie in &ties {
+                    replacement.push_str(&text[from..tie.start]);
+                    replacement.push('~');
+                    from = tie.end;
+                }
+                tied.sort();
+                tied.dedup();
+                changes.push(Change {
+                    span,
+                    replacement,
+                    line,
+                    description: format!("a tie after {}", tied.join(", ")),
+                    removed_lines: 0,
+                });
+            }
+            at += raw.len();
+        }
+    }
+    changes
+}
+
+/// Whether a word starts here, maybe after chords written before it.
+fn word_follows(mut rest: &str) -> bool {
+    loop {
+        if let Some(after) = rest.strip_prefix('^') {
+            rest = after;
+        } else if rest.starts_with("\\[") {
+            match rest.find(']') {
+                Some(close) => rest = &rest[close + 1..],
+                None => return false,
+            }
+        } else {
+            break;
+        }
+    }
+    rest.starts_with(|c: char| c.is_alphanumeric() || matches!(c, '„' | '"' | '('))
+        || rest.starts_with("\\enquote")
+        || rest.starts_with("\\multivoice")
 }
 
 /// Runs of spaces become one space, and spaces ending a line go: TeX reads
@@ -1235,12 +1390,53 @@ mod tests {
         let (out, changes) = tidy(text);
         assert!(out.contains("dál a dál \\[G] a les"), "{out}");
         assert!(out.contains("re\\[Bm]turn \\[Em]\\[D] home"), "{out}");
-        // At the end of a line, inside a word, in an instrumental: as is.
-        assert!(out.contains("na konci\\[G] \\[D]\n"), "{out}");
+        // After the last word too, like the other trailing chords.
+        assert!(out.contains("na konci \\[G] \\[D]\n"), "{out}");
+        // Inside a word, in an instrumental: as is.
         assert!(out.contains("compa-\\[A]ny\n"), "{out}");
         assert!(out.contains("| \\[C]\\[] | ^\\[] |"), "{out}");
-        assert_eq!(changes.len(), 2, "{changes:?}");
+        assert_eq!(changes.len(), 3, "{changes:?}");
         assert_eq!(tidy(&out).1.len(), 0);
+    }
+
+    #[test]
+    fn a_chord_after_the_last_word_gets_a_space_before_it() {
+        for (line, spaced) in [
+            ("jsem šel\\[D]", "jsem šel \\[D]"),
+            ("jsem šel\\[D] \\rrep", "jsem šel \\[D] \\rrep"),
+            (
+                "jsem šel\\[D]\\[G] \\rep{2}",
+                "jsem šel \\[D]\\[G] \\rep{2}",
+            ),
+            ("jsem šel \\[D]", "jsem šel \\[D]"),
+            // Before a word or a macro other than a repeat: not the end.
+            ("jsem šel\\[D] \\textnote{x}", "jsem šel\\[D] \\textnote{x}"),
+        ] {
+            assert_eq!(tidied_line("english", line), spaced);
+        }
+    }
+
+    #[test]
+    fn a_one_letter_word_in_czech_is_tied_to_the_next() {
+        assert_eq!(
+            tidied_line("czech", "Šel jsem s \\[G]tebou v lese a ^i k nám, a"),
+            "Šel jsem s~\\[G]tebou v~lese a~^i~k~nám, a"
+        );
+        assert_eq!(
+            tidied_line("slovak", "\\[Am]A v \\enquote{zime} z \\v{c}aja"),
+            // A word starting with an accent macro is not known for one.
+            "\\[Am]A~v~\\enquote{zime} z \\v{c}aja"
+        );
+        // A tie already there, a word ending in a letter, a control word,
+        // a chord before nothing: as is.
+        let as_is = "a~já, mars i \\[G] \\rep{2}";
+        assert_eq!(tidied_line("czech", as_is), as_is);
+        // Not in other languages.
+        assert_eq!(tidied_line("english", "a song in a key"), "a song in a key");
+        let (text, changes) = tidy(&verse_song("czech", "s nim a s ní"));
+        assert_eq!(changes.len(), 1);
+        assert_eq!(changes[0].description, "a tie after a, s");
+        assert_eq!(tidy(&text).1.len(), 0);
     }
 
     #[test]
@@ -1512,7 +1708,6 @@ mod tests {
             "nedo\\[Fmaj7]jdou",
             "\\[C]Vydal z~hrdla",
             "conver\\[G#m]sation",
-            "slova\\[G]",
         ] {
             let lang = if line.contains("conver") {
                 "english"

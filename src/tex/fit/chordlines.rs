@@ -49,7 +49,8 @@ fn rows_of(text: &str, info: &PartInfo) -> Vec<Row> {
             continue;
         }
         let code = code_of(line);
-        if code.trim().is_empty() {
+        // A chord switch on a line of its own prints nothing.
+        if code.trim().is_empty() || super::inside::is_switch(code) {
             continue;
         }
         let indent = code.len() - code.trim_start().len();

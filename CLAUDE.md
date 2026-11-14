@@ -25,7 +25,7 @@ cargo run -- <url|file.html|file.txt|-> [latex|text|debug]
 **The version in `Cargo.toml` is part of the interface.** ZubuvZpevnikUi
 runs this tool (as a git submodule, built next to the app) and checks
 `chords_converter --version` against a minimum. Raise the minor version
-(`0.12.0` → `0.13.0`) in the same commit as any change to the command line,
+(`0.13.0` → `0.14.0`) in the same commit as any change to the command line,
 the exit codes, the `Saving output to:` lines or the `shrink --json`
 format, and tell the UI (a note in its `docs/`).
 
@@ -150,7 +150,7 @@ project file under `projects/`. One song per file.
   songbook does it, and so does this tool's `tidy`; it is rendering-neutral).
 - **`\[X]`** goes immediately before the syllable the chord falls on.
   Sharp is `#`, flat is `&` (`\[F#m]`, `\[B&]`). Trailing chords after the last
-  word are separated by single spaces: `\[E&sus4] \[E&]`.
+  word are separated by single spaces, from the word too: `word \[E&sus4] \[E&]`.
 - **No chord** is `\[\nochord]`, never `\[N.C.]` (its C would be transposed).
 - **No `{…}` groups and no `~` to hold words under a chord.** Multiword chords
   are the package default: a wide chord hangs over the following words by
@@ -160,6 +160,8 @@ project file under `projects/`. One song per file.
 - **`~` is only for Czech/Slovak typography:** after one-letter prepositions
   and conjunctions (`v~lese`, `a~když`, `s~tebou`) and the user's own
   preposition ties (`na~`, `do~`, `za~`, …). Never in English songs.
+  `tidy` ties the one-letter ones (`a i k o s u v z`), before a chord too
+  (`v~\[G]lese`).
 - Braces that *are* needed stay: `\[Am]{\multivoice{main}{second}}` puts a
   chord over a two-voice span.
 
@@ -248,7 +250,9 @@ the ones that keep the song most readable first:
    then `\chordsoffonsmallpage` on parts that reprint chords already shown
    (chords read from elsewhere, line after line), on the parts nearest
    below a part showing the same chords (the second of two verses in a row
-   rather than the first after a chorus), later parts first; on A4, the
+   rather than the first after a chorus), later parts first; before that,
+   a part whose lines repeat the chords of its first lines hides them
+   after those, the switch on a line of its own; on A4, the
    second voice printed inline (`\iflargepaper\multivoiceinline\fi`,
    A5 drops it anyway) where no line gets too wide;
 3. `\smalleronsmallpage` (bare form only, 8 pt; anything smaller is too small

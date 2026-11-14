@@ -24,6 +24,7 @@ use super::{PartSpan, Scan, code_of, scan};
 use std::ops::Range;
 
 mod chordlines;
+mod inside;
 mod typos;
 
 /// The paper a change acts on.
@@ -222,7 +223,11 @@ struct PartInfo<'a> {
     part: &'a PartSpan,
     /// The chords of its body, in order; `None` when it replays them (`^`)
     /// or switches chords on and off inside, so they can't be compared.
+    /// A part hiding its chords inside where its lines repeat its first
+    /// ones (`inside`) still shows them all, so it keeps them.
     chords: Option<Vec<String>>,
+    /// Whether it hides its chords inside, on a line of its own.
+    mid_switch: bool,
     switch: Chords,
     /// Lines it prints, chord rows aside.
     lyric_rows: usize,
@@ -249,7 +254,7 @@ fn info<'a>(text: &str, part: &'a PartSpan) -> PartInfo<'a> {
     let mut words = String::new();
     for line in text[part.body.clone()].lines() {
         let code = code_of(line).trim();
-        if code.is_empty() {
+        if code.is_empty() || inside::is_switch(code) {
             continue;
         }
         if has_word(code, "chordsoff")
@@ -268,9 +273,28 @@ fn info<'a>(text: &str, part: &'a PartSpan) -> PartInfo<'a> {
         words.push_str(&lyric_words(code));
         words.push('\n');
     }
+    // One switch on a line of its own, where the lines after it repeat the
+    // chords of those before (or have none): every chord can still be read.
+    let (rows, switches) = inside::rows(text, part.body.clone());
+    let mid_switch = !switches.is_empty();
+    if let [at] = switches[..] {
+        let conditional = text[part.body.clone()].lines().any(|l| {
+            ["\\if", "\\else", "\\fi"]
+                .iter()
+                .any(|w| code_of(l).contains(w))
+        });
+        if conditional
+            || !(inside::repeats(&rows, at) || rows[at..].iter().all(|r| r.chords.is_empty()))
+        {
+            replayed = true;
+        }
+    } else if switches.len() > 1 {
+        replayed = true;
+    }
     PartInfo {
         part,
         chords: (!replayed).then_some(chords),
+        mid_switch,
         switch,
         lyric_rows,
         chorded_rows,
@@ -350,12 +374,14 @@ pub fn proposals(text: &str) -> Vec<Proposal> {
     let mut proposals = Vec::new();
     let names = Names::of(text, &scan);
     proposals.extend(chords_off(&names, &infos, Stage::AllPapers));
+    proposals.extend(inside::chords_inside(&names, &infos, Stage::AllPapers));
     proposals.extend(chorus_reminders(text, &scan, &infos, &names));
     proposals.extend(choruses_in_disguise(&infos, &names));
     proposals.extend(repeated_rows(text, &infos, &names));
     proposals.extend(typos::typos(&infos, &names, scan.lang.as_deref()));
     proposals.extend(chordlines::chords_across_lines(&infos, &names));
     proposals.extend(chords_off(&names, &infos, Stage::SmallPaper));
+    proposals.extend(inside::chords_inside(&names, &infos, Stage::SmallPaper));
     proposals.extend(smaller_type(text, &scan, &infos));
     proposals.extend(second_voice_inline(text, &scan, &infos));
     proposals.extend(joined_lines(&names, &infos, scan.lang.as_deref()).0);
@@ -439,6 +465,7 @@ fn chords_off_of_kind(
         .copied()
         .filter(|&j| {
             infos[j].chords.as_ref().is_some_and(|c| !c.is_empty())
+                && !infos[j].mid_switch
                 && (stage == Stage::AllPapers || infos[j].switch != Chords::Off)
         })
         .collect();
@@ -1822,9 +1849,13 @@ impl<'a> Names<'a> {
             let code = code_of(line).trim();
             let rows = match reprint_rows.get(&(n + 1)) {
                 Some(&rows) => rows,
-                // A part's opening and closing lines print nothing.
+                // A part's opening and closing lines print nothing, nor
+                // does a chord switch.
                 None => usize::from(
-                    !code.is_empty() && !code.starts_with("\\begin") && !code.starts_with("\\end"),
+                    !code.is_empty()
+                        && !code.starts_with("\\begin")
+                        && !code.starts_with("\\end")
+                        && !inside::is_switch(code),
                 ),
             };
             rows_before.push(rows_before.last().unwrap() + rows);
@@ -1879,6 +1910,22 @@ pub fn apply(text: &str, chosen: &[&Proposal]) -> Result<String, String> {
         {
             return Err(
                 "the chosen proposals change the same text; apply one, then ask again".into(),
+            );
+        }
+    }
+    // Chords hidden inside a part count its lines as they are: any other
+    // change to the part (its switch, its lines joined) is a second look.
+    for p in chosen.iter().filter(|p| p.kind.ends_with("inside")) {
+        let part = &p.sources[0].span;
+        let touches = chosen.iter().any(|q| {
+            !std::ptr::eq(*p, *q)
+                && q.edits
+                    .iter()
+                    .any(|e| e.span.start < part.end && part.start <= e.span.start)
+        });
+        if touches {
+            return Err(
+                "the chosen proposals change the same part; apply one, then ask again".into(),
             );
         }
     }
@@ -2990,6 +3037,83 @@ mod tests {
             .filter(|p| p.kind == "chordsoff" || p.kind == "insertchorus*")
             .collect();
         assert_eq!(both.len(), 2);
+        assert!(apply(&text, &both).is_err());
+    }
+
+    /// Four lines going G C, D G twice: the last two repeat the first two.
+    const TWICE: [&str; 4] = [
+        "\\[G]Walking down the \\[C]lane",
+        "\\[D]looking at the \\[G]rain,",
+        "\\[G]talking to the \\[C]crowd",
+        "\\[D]singing it out \\[G]loud.",
+    ];
+
+    #[test]
+    fn lines_repeating_the_first_lines_of_their_part_hide_their_chords() {
+        let text = song(&part("\\beginverse", &TWICE));
+        let all = proposals(&text);
+        let p = all
+            .iter()
+            .find(|p| p.id == "chordsoffonsmallpageinside@8")
+            .expect("offered on small paper");
+        assert_eq!(p.gain_lines, 2);
+        assert_eq!(p.score, 75);
+        assert_eq!(
+            p.description,
+            "lines 8–9 of verse 1 play the chords of lines 6–7 again: \\chordsoffonsmallpage before line 8"
+        );
+        assert!(ids(&text).contains(&"chordsoffinside@8".to_string()));
+        let out = applied(&text, "chordsoffonsmallpageinside@8");
+        assert!(out.contains("rain,\n    \\chordsoffonsmallpage\n    \\[G]talking"));
+        // Once there, it is not offered again.
+        assert!(!ids(&out).iter().any(|id| id.contains("inside")));
+    }
+
+    #[test]
+    fn the_fewest_lines_that_repeat_to_the_end_are_kept() {
+        let lines = ["\\[D]One \\[A]two", "\\[Hm]three \\[G]four"].repeat(3);
+        let text = song(&part("\\beginverse", &lines));
+        assert!(ids(&text).contains(&"chordsoffonsmallpageinside@8".to_string()));
+    }
+
+    #[test]
+    fn a_chord_still_sounding_need_not_be_written_again() {
+        // The third line starts on the Am the second ended on.
+        let lines = [
+            "Your \\[Am]house is by the \\[C]lake",
+            "and \\[G]I can hear it \\[Am]wake,",
+            "the door is open \\[C]wide",
+            "and \\[G]I can see in\\[Am]side.",
+        ];
+        let text = song(&part("\\beginverse", &lines));
+        assert!(ids(&text).contains(&"chordsoffonsmallpageinside@8".to_string()));
+    }
+
+    #[test]
+    fn lines_with_other_chords_keep_them() {
+        let mut lines = TWICE;
+        lines[3] = "\\[D]singing it out \\[Em]loud.";
+        let text = song(&part("\\beginverse", &lines));
+        assert!(!ids(&text).iter().any(|id| id.contains("inside")));
+    }
+
+    #[test]
+    fn a_part_hiding_its_repeat_still_shows_its_chords_to_the_next() {
+        let text = song(&[part("\\beginverse", &TWICE), part("\\beginverse", &TWICE)].concat());
+        let out = applied(&text, "chordsoffonsmallpageinside@8");
+        // The second verse can still read its chords from the first.
+        assert!(
+            ids(&out).contains(&"chordsoff@13".to_string()),
+            "{:?}",
+            ids(&out)
+        );
+        // But the part and its switch are not changed twice at once.
+        let all = proposals(&text);
+        let both: Vec<&Proposal> = all
+            .iter()
+            .filter(|p| p.id == "chordsoffonsmallpageinside@8" || p.id == "joinlines@5")
+            .collect();
+        assert_eq!(both.len(), 2, "{:?}", ids(&text));
         assert!(apply(&text, &both).is_err());
     }
 }

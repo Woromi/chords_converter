@@ -236,6 +236,14 @@ part of the identical-output check `\insertchorus` has.
    - [x] The second voice inline on A4 (0.12.0, the user): `shrink`
          kind `multivoiceinline`, score 85, checked by typesetting A4
          with `--measure`.
+   - [x] Chords hidden inside a part (0.13.0, the user): when a part's
+         lines repeat the chords of its first lines, `shrink` kinds
+         `chordsoffinside` and `chordsoffonsmallpageinside` (score 75) put
+         the switch on a line of its own after them. Placed by hand in 40
+         songbook parts, it finds the same line in all 40; 80 more parts
+         could take it.
+   - [ ] Join lines in a part with a switch inside: `join` refuses the
+         part, though a switch between two pairs could stay alone.
    - [ ] The second voice back on A5 (asked by the user, form: inline,
          `\multivoiceinlineonsmallpage`). Not decided where: it adds to
          A5, so it needs typesetting, which `tidy` never does.
@@ -243,8 +251,13 @@ part of the identical-output check `\insertchorus` has.
          the user). Not for `tidy`: of 62 lowercase English line starts in
          the songbook, many are a word split across lines (`ful\[Em]fils`)
          or a song's own style (Hey Jude), so it is a person's call.
-   - [ ] A missing `~` after a Czech one-letter word: left out, since the
-         songbook ties only 249 of 1466 (lines rarely wrap). Ask the user.
+   - [x] A missing `~` after a Czech one-letter word (the user, "to make
+         it clean", though lines rarely wrap): `tidy` ties it, in Czech
+         and Slovak songs; 1031 songbook lines. A tie before a chord
+         (`a~\[C]zem`) prints pixel-identical.
+   - [x] A chord after the last word of a line gets a space before it
+         (`vzít\[D]` → `vzít \[D]`, the user), like trailing chords; 123
+         in the songbook.
    - [ ] Spelling against the Hunspell dictionary of the song's `lang`
          (installed: `/usr/share/hunspell`), listed, never fixed.
    - [ ] Re-breaking lines at other points stays a human judgement;

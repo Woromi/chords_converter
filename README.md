@@ -56,10 +56,20 @@ it, so it is never left half written.
   `latexindent` slip aside), without needing it installed.
 - **A chord between two words gets a space before it**: `dál\[G] a les`
   becomes `dál \[G] a les`. Glued to the word before, the chord belongs to
-  neither word, and with `\chordsoff` the line reads otherwise. Chords at
-  the end of a line, inside a word, `^`, `\[]` slots and instrumentals stay
-  as they are. On the songbook: 21 chords in 13 songs. The printer never
-  writes it this way in the first place.
+  neither word, and with `\chordsoff` the line reads otherwise. So does a
+  chord after the last word of a line, `vzít\[D]` → `vzít \[D]`, as the
+  songbook writes trailing chords (also before `\rrep` or `\rep{n}`).
+  Chords inside a word, `^`, `\[]` slots and instrumentals stay as they
+  are. On the songbook: 21 chords between words, 123 at line ends. The
+  printer never writes it this way in the first place.
+- **A one-letter word is tied to the next in Czech and Slovak** (`lang`
+  `czech` or `slovak`): `v lese` → `v~lese`, `a když` → `a~když`, for
+  `a i k o s u v z` in either case, as Czech typography keeps them off
+  the end of a line. Before a chord the tie goes before it, `v~\[G]lese`
+  (it prints the same). Only a word on the same line is tied to; a letter
+  inside a word with a chord in it (`D\[E]o hory`), instrumentals and
+  control words stay. On the songbook: 1031 lines; songs that fit print
+  the same, since their lines do not wrap.
 - **Setup on lines of its own moves onto the opening line**:
   `\beginverse` followed by a line `\chordsoff` becomes
   `\beginverse\chordsoff`. Only the lines before the first sung one move,
@@ -151,8 +161,18 @@ Song.tex
   | an instrumental's row played again, once with `\rep{n}` | 85 | nothing looked up elsewhere, only counted |
   | the second voice inline on A4 | 85 | every word and chord kept; which words go together read from the brackets |
   | `\insertchorus*` | 80 | one glance back to the chorus, and back |
+  | `\chordsoff`, `\chordsoffonsmallpage` inside a part | 75 | the chords a line or two back, in the same part |
   | `\chordsoff`, `\chordsoffonsmallpage` | 70 | words read here, chords somewhere else, line after line |
   | `\smalleronsmallpage` | 20 | the whole song harder to read |
+
+  Chords inside a part: when the lines of a part play the chords of its
+  first lines again (a verse going D A Hm G two lines at a time), the
+  switch goes on a line of its own after those first lines, as the
+  songbook already does by hand. Line is compared with line, the reader's
+  way, and a line may leave out a first chord still sounding from the
+  line before. The fewest first lines that repeat to the end of the part
+  keep their chords. A part hiding chords so still lends them to a later
+  part without any, since every chord is shown in it once.
 
   The second voice inline: A4 stacks `\multivoice{main}{second}` in a
   row of its own under the line, and `\multivoiceinline` prints it
