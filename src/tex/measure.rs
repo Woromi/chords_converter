@@ -63,26 +63,56 @@ for paper in papers:
 print(json.dumps(out))
 "#;
 
+/// The package that typesets the song and the scripts that measure it: the
+/// one `--package` names; else the songbook's submodule `zubuvzpevnik/`,
+/// which has its scripts inside since the package became a repository of its
+/// own; else the songbook's own `scripts/` beside `zubuvzpevnik/`, the
+/// layout before that.
+fn package_and_scripts(
+    songbook: &Path,
+    package: Option<&Path>,
+) -> Result<(PathBuf, PathBuf), String> {
+    if let Some(package) = package {
+        let package = package
+            .canonicalize()
+            .map_err(|e| format!("No package at '{}': {}", package.display(), e))?;
+        let scripts = package.join("scripts");
+        if !scripts.join("checkpaper.py").is_file() {
+            return Err(format!(
+                "'{}' has no scripts/checkpaper.py; --package has to name the zubuvzpevnik package.",
+                package.display()
+            ));
+        }
+        return Ok((package, scripts));
+    }
+    let package = songbook.join("zubuvzpevnik");
+    for scripts in [package.join("scripts"), songbook.join("scripts")] {
+        if scripts.join("checkpaper.py").is_file() {
+            return Ok((package, scripts));
+        }
+    }
+    Err(format!(
+        "'{}' has neither zubuvzpevnik/scripts/checkpaper.py nor scripts/checkpaper.py; \
+         --songbook has to name the ZubuvZpevnik checkout (or --package the package).",
+        songbook.display()
+    ))
+}
+
 /// Measures `text` on each of `papers` (`a4`, `a5`) with the songbook at
-/// `songbook`.
+/// `songbook`, typeset with `package` when given (see `package_and_scripts`).
 pub fn measure(
     songbook: &Path,
+    package: Option<&Path>,
     text: &str,
     papers: &[&str],
 ) -> Result<BTreeMap<String, Measured>, String> {
     let songbook = songbook
         .canonicalize()
         .map_err(|e| format!("No songbook at '{}': {}", songbook.display(), e))?;
-    let scripts = songbook.join("scripts");
-    if !scripts.join("checkpaper.py").is_file() {
-        return Err(format!(
-            "'{}' has no scripts/checkpaper.py; --songbook has to name the ZubuvZpevnik checkout.",
-            songbook.display()
-        ));
-    }
+    let (package, scripts) = package_and_scripts(&songbook, package)?;
 
     let root = TempRoot::new()?;
-    build_root(&songbook, root.path(), text)?;
+    build_root(&songbook, &package, root.path(), text)?;
 
     let output = Command::new("python3")
         .arg("-c")
@@ -140,10 +170,12 @@ pub fn measure(
 /// Lays out the temporary songbook: the real one's package, images and song
 /// folders linked, `build/` of its own with the engraving cache linked in,
 /// and the song copied.
-fn build_root(songbook: &Path, root: &Path, text: &str) -> Result<(), String> {
+fn build_root(songbook: &Path, package: &Path, root: &Path, text: &str) -> Result<(), String> {
     let io = |e: std::io::Error| format!("Could not prepare the measurement: {}", e);
-    for linked in ["zubuvzpevnik", "img"] {
-        let target = songbook.join(linked);
+    for (target, linked) in [
+        (package.to_path_buf(), "zubuvzpevnik"),
+        (songbook.join("img"), "img"),
+    ] {
         if target.exists() {
             symlink(&target, &root.join(linked)).map_err(io)?;
         }

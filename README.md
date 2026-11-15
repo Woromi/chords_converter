@@ -261,14 +261,18 @@ Song.tex
   keep chords on the first part alone, but it is graded last resort (30),
   above a smaller type only.
 - **`--measure`** typesets the song with the songbook's own
-  `scripts/checkpaper.py` (the reference measurement, not imitated) and says
+  `checkpaper.py` (the reference measurement, not imitated) and says
   how many pages it takes and which lines are too wide. A song fits when it
   takes one page (two for `pap={…a5x2}`) and no line is too wide; a too-wide
   line is re-broken by hand. The song is measured in a temporary copy of the
   songbook's layout, so a draft that isn't in the songbook yet can be
   measured too, and nothing is written into the songbook. The songbook is
-  `../ZubuvZpevnik` unless `--songbook DIR` says otherwise. Once a song fits,
-  record it with `scripts/checkpaper.py --measure a5 --write <song>` there.
+  `../ZubuvZpevnik` unless `--songbook DIR` says otherwise. The package and
+  its scripts are the songbook's submodule `zubuvzpevnik/` (a songbook from
+  before the package became a repository of its own has `scripts/` at its
+  root, which still works), or the package `--package DIR` names (since
+  0.14.0). Once a song fits, record it with
+  `zubuvzpevnik/scripts/checkpaper.py --measure a5 --write <song>` there.
 - **Descriptions name the parts** as a person counts them: "verse 3" as the
   page numbers it, "the 2nd chorus" (a reprint with `\insertchorus` counts
   as sung again), "the 1st chorus R2" for a numbered one, and a part type a

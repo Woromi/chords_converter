@@ -489,6 +489,7 @@ fn list_proposals(
     fit: Option<&str>,
     measure: bool,
     songbook: Option<&Path>,
+    package: Option<&Path>,
     json: bool,
     listing: Listing,
 ) -> Result<(), String> {
@@ -505,7 +506,7 @@ fn list_proposals(
         if let Some(m) = measured.get(paper) {
             return Ok(m.clone());
         }
-        let m = tex::measure::measure(songbook, &text, &[paper])?
+        let m = tex::measure::measure(songbook, package, &text, &[paper])?
             .remove(paper)
             .ok_or_else(|| format!("No measurement for {}", paper))?;
         measured.insert(paper.to_string(), m.clone());
@@ -563,7 +564,7 @@ fn list_proposals(
         not_joined = tex::fit::unjoinable(&text);
         for p in all.iter().filter(|p| p.kind == "joinlines") {
             let kind = p.joined_kind().unwrap_or("part");
-            match too_wide(&text, songbook, &measured, p)? {
+            match too_wide(&text, songbook, package, &measured, p)? {
                 None => shown.push(p),
                 Some(why) => not_joined.push(format!("{kind}: {why}")),
             }
@@ -590,7 +591,7 @@ fn list_proposals(
                 measure_on(paper)?;
             }
             for p in lengthening {
-                if too_wide(&text, songbook, &measured, p)?.is_none() {
+                if too_wide(&text, songbook, package, &measured, p)?.is_none() {
                     shown.push(p);
                 }
             }
@@ -784,6 +785,7 @@ fn json_listing(
 fn too_wide(
     text: &str,
     songbook: &Path,
+    package: Option<&Path>,
     measured: &BTreeMap<String, tex::measure::Measured>,
     p: &tex::fit::Proposal,
 ) -> Result<Option<String>, String> {
@@ -806,7 +808,7 @@ fn too_wide(
         )));
     }
     let changed = tex::fit::apply(text, &[p])?;
-    let after = tex::measure::measure(songbook, &changed, papers)?;
+    let after = tex::measure::measure(songbook, package, &changed, papers)?;
     // The papers a lengthened line is too wide for, and those it takes
     // more pages on.
     let (mut wide, mut longer) = (Vec::new(), Vec::new());
@@ -909,8 +911,8 @@ Usage:
   chords_converter <SOURCE> [FORMAT]
   chords_converter convert <SOURCE> [--format FORMAT] [--tidy] [-o FILE | -o -]
   chords_converter tidy <SONG.tex> [-o FILE | -o -]
-  chords_converter shrink <SONG.tex> [--fit a4|a5] [--measure] [--songbook DIR] [--json]
-  chords_converter join <SONG.tex> [--songbook DIR] [--json]
+  chords_converter shrink <SONG.tex> [--fit a4|a5] [--measure] [--songbook DIR] [--package DIR] [--json]
+  chords_converter join <SONG.tex> [--songbook DIR] [--package DIR] [--json]
   chords_converter check <SONG.tex> [--json]
   chords_converter apply <SONG.tex> --id ID [--id ID ...] [-o FILE | -o -]
   chords_converter apply <SONG.tex> --dismiss ID [--dismiss ID ...] [-o FILE | -o -]
@@ -938,8 +940,10 @@ lines' chords, chords hidden where they repeat ones shown just before
 smaller type on small paper, and with --measure the second voice inline on
 A4 where no line gets too wide.
 --fit a4|a5 keeps to the ones that help fit that paper; --measure typesets
-the song with the songbook's own scripts/checkpaper.py (the songbook is
-../ZubuvZpevnik unless --songbook says otherwise) and says whether it fits.
+the song with the songbook's own checkpaper.py (the songbook is
+../ZubuvZpevnik unless --songbook says otherwise; its package and scripts are
+its submodule zubuvzpevnik/, or the package --package names) and says
+whether it fits.
 join offers every two lines of each part of a kind joined into one, where
 every part of the kind can take it (an odd last line stays alone when every
 part has as many lines), after typesetting the joined song to check no line
@@ -978,6 +982,7 @@ enum Command {
         fit: Option<String>,
         measure: bool,
         songbook: Option<PathBuf>,
+        package: Option<PathBuf>,
         json: bool,
     },
     /// Corrections a person judges: a part that may be the chorus.
@@ -989,6 +994,7 @@ enum Command {
     Join {
         file: PathBuf,
         songbook: Option<PathBuf>,
+        package: Option<PathBuf>,
         json: bool,
     },
     Apply {
@@ -1017,11 +1023,13 @@ fn parse_args(args: &[String]) -> Result<Command, String> {
                 file,
                 fit: None,
                 songbook,
+                package,
                 json,
                 ..
             } => Ok(Command::Join {
                 file,
                 songbook,
+                package,
                 json,
             }),
             _ => Err("join takes no --fit: it checks A4 and A5 both.".to_string()),
@@ -1034,6 +1042,7 @@ fn parse_args(args: &[String]) -> Result<Command, String> {
                 fit: None,
                 measure: false,
                 songbook: None,
+                package: None,
                 json,
             } => Ok(Command::Check { file, json }),
             _ => Err("check takes only a song file and --json.".to_string()),
@@ -1103,6 +1112,7 @@ fn parse_suggest(args: &[String]) -> Result<Command, String> {
     let mut fit = None;
     let mut measure = false;
     let mut songbook = None;
+    let mut package = None;
     let mut json = false;
     let mut args = args.iter();
     while let Some(arg) = args.next() {
@@ -1121,6 +1131,7 @@ fn parse_suggest(args: &[String]) -> Result<Command, String> {
             }
             "--measure" => measure = true,
             "--songbook" => songbook = Some(PathBuf::from(value()?)),
+            "--package" => package = Some(PathBuf::from(value()?)),
             "--json" => json = true,
             option if option.starts_with('-') => {
                 return Err(format!("Unknown option '{}'.", option));
@@ -1135,6 +1146,7 @@ fn parse_suggest(args: &[String]) -> Result<Command, String> {
         fit,
         measure,
         songbook,
+        package,
         json,
     })
 }
@@ -1229,22 +1241,33 @@ async fn main() {
             fit,
             measure,
             songbook,
+            package,
             json,
         } => list_proposals(
             &file,
             fit.as_deref(),
             measure,
             songbook.as_deref(),
+            package.as_deref(),
             json,
             Listing::Shrink,
         ),
         Command::Join {
             file,
             songbook,
+            package,
             json,
-        } => list_proposals(&file, None, true, songbook.as_deref(), json, Listing::Join),
+        } => list_proposals(
+            &file,
+            None,
+            true,
+            songbook.as_deref(),
+            package.as_deref(),
+            json,
+            Listing::Join,
+        ),
         Command::Check { file, json } => {
-            list_proposals(&file, None, false, None, json, Listing::Check)
+            list_proposals(&file, None, false, None, None, json, Listing::Check)
         }
         Command::Apply {
             file,
@@ -1440,6 +1463,7 @@ mod tests {
                 fit: Some("a5".to_string()),
                 measure: true,
                 songbook: None,
+                package: None,
                 json: true,
             })
         );
@@ -1463,10 +1487,21 @@ mod tests {
             Ok(Command::Join {
                 file: "S.tex".into(),
                 songbook: None,
+                package: None,
                 json: true,
             })
         );
         assert!(parse_args(&args(&["join", "S.tex", "--fit", "a5"])).is_err());
+        assert_eq!(
+            parse_args(&args(&["join", "S.tex", "--package", "P", "--json"])),
+            Ok(Command::Join {
+                file: "S.tex".into(),
+                songbook: None,
+                package: Some("P".into()),
+                json: true,
+            })
+        );
+        assert!(parse_args(&args(&["check", "S.tex", "--package", "P"])).is_err());
 
         assert_eq!(
             parse_args(&args(&[
