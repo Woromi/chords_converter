@@ -46,6 +46,33 @@ const USER_AGENT: &str = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KH
 /// usually short-lived, so a couple of attempts with a growing pause are enough.
 const ATTEMPTS: u32 = 3;
 
+/// How long one request may take.
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// How long fetching may take in all, pauses and retries included.
+/// ZubuvZpevnikUi stops the converter after 60 s, and a message saying the
+/// site would not answer is worth more than a last try nobody hears of.
+const FETCH_BUDGET: Duration = Duration::from_secs(50);
+
+/// The least of the budget a try is worth making with.
+const LEAST_WORTH: Duration = Duration::from_secs(5);
+
+/// Whether to make attempt `attempt` with `elapsed` of the budget gone: the
+/// pause before it (none, 2 s, then 4 s) and how long the request may take,
+/// cut to what is left. `None` once the attempts are used up or too little
+/// is left for a try worth making.
+fn next_try(attempt: u32, elapsed: Duration) -> Option<(Duration, Duration)> {
+    if attempt == 0 || attempt > ATTEMPTS {
+        return None;
+    }
+    let pause = match attempt {
+        1 => Duration::ZERO,
+        n => Duration::from_secs(2 << (n - 2)),
+    };
+    let left = FETCH_BUDGET.checked_sub(elapsed + pause)?;
+    (left >= LEAST_WORTH).then_some((pause, left.min(REQUEST_TIMEOUT)))
+}
+
 /// The cookies a browser carries to a site that has already let it in, and the
 /// browser they were earned by. pisnicky-akordy.cz sits behind a Cloudflare
 /// challenge that is solved by running its JavaScript — which no plain HTTP
@@ -106,7 +133,7 @@ fn build_client() -> Result<reqwest::Client, reqwest::Error> {
         .default_headers(headers)
         .cookie_store(true)
         .gzip(true)
-        .timeout(Duration::from_secs(30))
+        .timeout(REQUEST_TIMEOUT)
         .build()
 }
 
@@ -117,14 +144,17 @@ async fn fetch_html(url: &str) -> Result<String, String> {
     let client = build_client().map_err(|e| format!("Could not set the HTTP client up: {}", e))?;
 
     let mut last: String = String::new();
-    for attempt in 1..=ATTEMPTS {
+    let started = std::time::Instant::now();
+    let mut attempt = 1;
+    while let Some((pause, timeout)) = next_try(attempt, started.elapsed()) {
         if attempt > 1 {
             // Back off a little before asking again: 2s, then 4s.
-            tokio::time::sleep(Duration::from_secs(2 << (attempt - 2))).await;
+            tokio::time::sleep(pause).await;
             eprintln!("Retrying ({}/{}) ...", attempt, ATTEMPTS);
         }
+        attempt += 1;
 
-        let response = match client.get(url).send().await {
+        let response = match client.get(url).timeout(timeout).send().await {
             Ok(response) => response,
             Err(e) => {
                 last = format!("the request failed: {}", e);
@@ -1477,6 +1507,25 @@ mod tests {
             ]))
             .is_err()
         );
+    }
+
+    /// The whole of fetching stays under ZubuvZpevnikUi's 60 s: a site
+    /// that lets every request run into its timeout gets a second try cut
+    /// to what is left of the budget, and no third.
+    #[test]
+    fn fetching_keeps_within_its_budget() {
+        let s = Duration::from_secs;
+        assert_eq!(next_try(1, s(0)), Some((s(0), s(30))));
+        // Turned away at once: the pauses grow, the timeout stays.
+        assert_eq!(next_try(2, s(1)), Some((s(2), s(30))));
+        assert_eq!(next_try(3, s(4)), Some((s(4), s(30))));
+        assert_eq!(next_try(4, s(10)), None);
+        // Every request runs into its timeout: 30 s, then 2 s and 18 s.
+        assert_eq!(next_try(2, s(30)), Some((s(2), s(18))));
+        assert_eq!(next_try(3, s(50)), None);
+        // Too little left for a try worth making.
+        assert_eq!(next_try(2, s(44)), None);
+        assert_eq!(next_try(2, s(43)), Some((s(2), s(5))));
     }
 
     #[test]

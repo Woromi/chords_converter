@@ -101,3 +101,63 @@ impl SongPrinter for TextPrinter {
         "txt"
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::parsers::{SongParser, text::TextParser};
+
+    /// The text printer is the inverse of the text parser (CLAUDE.md): a
+    /// song written out and read back is the same song. So a song in the
+    /// printer's own layout, read and written out again, comes back byte
+    /// for byte: the header and every kind of part, chords on their
+    /// columns, a slash chord, the no-chord mark, a chords-only line, bars
+    /// with a repeat count, tablature, and a part of a kind of its own.
+    #[test]
+    fn a_song_written_out_and_read_back_is_the_same() {
+        let text = "\
+Example Band - Morning Train
+============================
+Source:   https://example.org/song
+Key:      Em
+Tempo:    120
+Tuning:   Standard
+Meter:    3/4
+Capo:     2
+Language: english
+Year: 1973
+
+[Intro]
+Em      D
+
+[Verse]
+Em          D
+When we all go to the river
+and back again
+
+[Pre-Chorus]
+     C         G
+Over the hills we go
+
+[Chorus]
+N.C.     Am7/G
+Row the boat, row
+
+[Instrumental]
+  C    G
+|      | x2
+
+[Tab]
+e|--7--9--|
+B|--8-----|
+
+[SPOKEN]
+Hello there
+
+";
+        let song = TextParser.parse("test", text);
+        let mut out = Vec::new();
+        TextPrinter.print(&song, &mut out).unwrap();
+        assert_eq!(String::from_utf8(out).unwrap(), text);
+    }
+}

@@ -379,7 +379,9 @@ prints them in the header above it, and a tab whose remark never mentions a
 capo is played with one all the same — so the header is read first and the
 tabber's remark only fills in what it left out. It also turns away
 anything that does not look like a browser, which is why pages are fetched with
-the headers one sends, a cookie jar and a couple of retries. Should a page still
+the headers one sends, a cookie jar and a couple of retries (50 seconds in
+all, so that a program running the tool hears why before it gives up on
+it). Should a page still
 come back as a bot check, open it in a browser, save it and pass the saved file:
 a saved page is recognised by the markup its site is built on, so it needs no
 address, and the one the page records is what the song names as its source.

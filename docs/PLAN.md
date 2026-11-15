@@ -322,3 +322,9 @@ part of the identical-output check `\insertchorus` has.
 - Output uses only macros in the UI's `knownSongCommands`, except
   `\textquotedbl` (from the stray-quote fix, commit 2cac66e). Add it there.
 - Rebuild the converter (`cargo build --release`) after changes.
+- Fetching gives up after 50 s in all (`FETCH_BUDGET` in `main.rs`, from the
+  code review): a request may take 30 s, a retry only what is left of the
+  50, so the app's 60 s watchdog always hears the converter's message
+  rather than killing it mid-retry.
+- The text printer is the inverse of the text parser, and a test says so
+  (`a_song_written_out_and_read_back_is_the_same`, from the code review).
