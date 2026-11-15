@@ -115,8 +115,10 @@ it, so it is never left half written.
   consonants, never across a vowel. Two exceptions. In English, a word
   whose vowels stand together (`on`, `world`, `strength`) is one syllable
   whatever the patterns say, so a chord inside it goes to its start
-  (`o\[G]n` becomes `\[G]on`); not `fire` or `like`, with two vowel
-  groups, which may be one syllable or two. In Czech and Slovak the
+  (`o\[G]n` becomes `\[G]on`), and so is one ending in a silent `e`
+  (`e\[G]dge`, `na\[Bm]me`, but not `ta-ble`). A chord between two vowels
+  standing together stays (`be\[C]yond`, `cry\[D]ing`): they may be two
+  syllables. In Czech and Slovak the
   patterns are trusted (they know the syllabic r of `te-prv`), and a
   chord on the consonants closing a word's last syllable moves to the
   syllable's start: `schodec\[F]h` becomes `scho\[F]dech`. And a chord

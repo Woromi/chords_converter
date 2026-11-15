@@ -128,7 +128,11 @@ part of the identical-output check `\insertchorus` has.
          groups (`fire`), and not in Czech or Slovak, whose patterns know
          the syllabic r of `te-prv`, which a vowel count takes for one
          syllable. 20 moves in 11 songbook songs, checked one by one, all
-         right.
+         right. A final `e` after a consonant is silent in English (the
+         user: `e\[G]dge`), not in `-ble`/`-tle`: 2 more moves
+         (`na\[Bm]me`). Not a chord between two vowels standing together:
+         `he\[E]art` would be right, but `be\[C]yond`, `cry\[D]ing` and
+         `na\[Gm]ive` are two syllables, which counting vowels can't tell.
    - [x] Indentation (the user: editing breaks it): `tidy` sets each
          line's leading spaces as `latexindent -l latexindent.yaml` does.
          Compared with `latexindent` on all 218 songbook songs: the same

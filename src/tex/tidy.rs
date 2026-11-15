@@ -1202,17 +1202,35 @@ mod syllables {
             // stand together ("on", "world", "strength") is one syllable
             // whatever they make of it, so a chord inside it belongs at its
             // start (the user: a chord cannot be sung on the "n" of "on").
-            // Not "fire" or "like": two vowel groups, which English sings
-            // as one syllable or two, and the patterns cannot tell. Czech
-            // and Slovak keep their patterns' syllables, which know the
-            // syllabic r and l of "te-prv" and "vlk".
+            // A final "e" after a consonant is silent ("edge", "like",
+            // "time", the user), except in "-ble", "-tle" and the like,
+            // where it is a syllable of its own ("ta-ble", "lit-tle").
+            // Two vowel groups otherwise ("open", "river") are two
+            // syllables, which the patterns may miss. Czech and Slovak keep
+            // their patterns' syllables, which know the syllabic r and l of
+            // "te-prv" and "vlk".
+            let silent_e = {
+                let n = word.len();
+                // English only: Czech and Slovak sing every "e".
+                !hyphenator.1
+                    && n >= 3
+                    && word[n - 1].eq_ignore_ascii_case(&'e')
+                    && !is_vowel(word[n - 2])
+                    && (!word[n - 2].eq_ignore_ascii_case(&'l') || is_vowel(word[n - 3]))
+            };
+            let sounded = if silent_e {
+                &word[..word.len() - 1]
+            } else {
+                &word[..]
+            };
             let one_syllable = !hyphenator.1
-                && word
+                && sounded
                     .iter()
                     .map(|&c| is_vowel(c))
                     .skip_while(|&v| !v)
                     .skip_while(|&v| v)
-                    .all(|v| !v);
+                    .all(|v| !v)
+                && sounded.iter().any(|&c| is_vowel(c));
             let starts = if one_syllable {
                 vec![0]
             } else {
@@ -1238,7 +1256,15 @@ mod syllables {
                 // closing consonants after the chord: the patterns miss
                 // syllables in Czech too ("u-mět"), and a chord with a vowel
                 // after it may well open one they missed.
-                let last_syllable = word[*index..].iter().all(|&c| !is_vowel(c));
+                // A silent final "e" is no vowel sung after the chord.
+                // Vowels standing together around the chord ("be-yond",
+                // "cry-ing", "na-ive") may be two syllables, so the chord
+                // stays there.
+                let last_syllable = sounded
+                    .get(*index..)
+                    .unwrap_or_default()
+                    .iter()
+                    .all(|&c| !is_vowel(c));
                 let closing = vowels > 0
                     && (hyphenator.1 || one_syllable)
                     && last_syllable
@@ -1688,11 +1714,15 @@ mod tests {
             tidied_line("english", "Walking o\\[G]n the wo\\[D]rld, stre\\[Em]ngth"),
             "Walking \\[G]on the \\[D]world, \\[Em]strength"
         );
-        // Two vowel groups may be one syllable in English ("fire", "like")
-        // or two ("fiery"), which the patterns cannot tell: those stay.
+        // A final "e" after a consonant is silent (the user: "edge")...
         assert_eq!(
-            tidied_line("english", "fi\\[Am]re li\\[F]ke"),
-            "fi\\[Am]re li\\[F]ke"
+            tidied_line("english", "the e\\[G]dge, li\\[F]ke ti\\[C]me"),
+            "the \\[G]edge, \\[F]like \\[C]time"
+        );
+        // ...but not in "-ble", "-tle", and two sounded vowel groups stay.
+        assert_eq!(
+            tidied_line("english", "ta\\[G]ble lit\\[C]tle o\\[D]pen"),
+            "ta\\[G]ble lit\\[C]tle o\\[D]pen"
         );
         // Czech has syllables with no vowel (te-prv, vlk), which its
         // patterns know: the chord on "prv" is where it belongs.
