@@ -121,6 +121,14 @@ part of the identical-output check `\insertchorus` has.
          chord with a vowel after it: the patterns miss syllables in Czech
          too (`u-mět`), which first moved 84 chords wrongly. 4 moves on the
          songbook, all right.
+   - [x] A chord inside an English word whose vowels stand together
+         (`o\[G]n`, `gu\[D]n`, `hea\[F#]rt`) goes to the word's start: one
+         vowel group is one syllable whatever the patterns say (the user:
+         a chord cannot be sung on the "n" of "on"). Not for two vowel
+         groups (`fire`), and not in Czech or Slovak, whose patterns know
+         the syllabic r of `te-prv`, which a vowel count takes for one
+         syllable. 20 moves in 11 songbook songs, checked one by one, all
+         right.
    - [x] Indentation (the user: editing breaks it): `tidy` sets each
          line's leading spaces as `latexindent -l latexindent.yaml` does.
          Compared with `latexindent` on all 218 songbook songs: the same
@@ -277,7 +285,13 @@ part of the identical-output check `\insertchorus` has.
 6. **Corpus checks (`printer-gap`).** Drafts move closer to the finished
    songs. `shrink` on *finished* songs proposes almost nothing, and every
    proposal there is a false positive to examine. (`tidy` on finished songs
-   does find real work: import leftovers nobody fixed by hand.)
+   does find real work: import leftovers nobody fixed by hand.) The gates
+   that read the songbook are `#[ignore]` tests (`cargo test --
+   --ignored`, under two seconds): every song scans, every proposal has an
+   id of its own, every proposal applies and leaves a song that can be
+   asked again, and `tidy` settles in one pass. The `--json` shape is
+   pinned by a test of its own (`the_json_listing_keeps_its_shape`), and
+   CLAUDE.md lists the stderr phrases the UI reads (from the code review).
 
 ## Done once ZubuvZpevnik had it
 

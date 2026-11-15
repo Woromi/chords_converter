@@ -3485,4 +3485,26 @@ mod tests {
             assert_distinct(&ids(&text), &file.display().to_string());
         }
     }
+
+    /// Every proposal on every songbook song applies, changes the song,
+    /// and leaves one that can be asked again: no proposal names bytes it
+    /// cannot replace, and none leaves a song a generator trips on. Run
+    /// with `cargo test -- --ignored`.
+    #[test]
+    #[ignore = "reads ../ZubuvZpevnik"]
+    fn every_songbook_proposal_applies() {
+        for file in super::super::songbook_songs() {
+            let text = std::fs::read_to_string(&file).unwrap();
+            for p in proposals(&text) {
+                // A typo with a chord inside the word is fixed by hand.
+                if p.edits.is_empty() {
+                    continue;
+                }
+                let out = apply(&text, &[&p])
+                    .unwrap_or_else(|e| panic!("{}: {}: {e}", file.display(), p.id));
+                assert_ne!(out, text, "{}: {} changed nothing", file.display(), p.id);
+                proposals(&out);
+            }
+        }
+    }
 }

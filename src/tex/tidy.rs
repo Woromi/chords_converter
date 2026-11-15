@@ -1198,7 +1198,26 @@ mod syllables {
             if !word.iter().copied().any(is_vowel) {
                 continue;
             }
-            let starts = hyphenator.starts(&word);
+            // Where the patterns are not trusted, a word whose vowels
+            // stand together ("on", "world", "strength") is one syllable
+            // whatever they make of it, so a chord inside it belongs at its
+            // start (the user: a chord cannot be sung on the "n" of "on").
+            // Not "fire" or "like": two vowel groups, which English sings
+            // as one syllable or two, and the patterns cannot tell. Czech
+            // and Slovak keep their patterns' syllables, which know the
+            // syllabic r and l of "te-prv" and "vlk".
+            let one_syllable = !hyphenator.1
+                && word
+                    .iter()
+                    .map(|&c| is_vowel(c))
+                    .skip_while(|&v| !v)
+                    .skip_while(|&v| v)
+                    .all(|v| !v);
+            let starts = if one_syllable {
+                vec![0]
+            } else {
+                hyphenator.starts(&word)
+            };
             for (k, (index, chord)) in chords.iter().enumerate() {
                 let start = starts
                     .iter()
@@ -1221,7 +1240,7 @@ mod syllables {
                 // after it may well open one they missed.
                 let last_syllable = word[*index..].iter().all(|&c| !is_vowel(c));
                 let closing = vowels > 0
-                    && hyphenator.1
+                    && (hyphenator.1 || one_syllable)
                     && last_syllable
                     && word[start..*index]
                         .iter()
@@ -1260,6 +1279,21 @@ mod syllables {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Tidying a song the songbook holds, then tidying what that gives,
+    /// changes nothing the second time: every rule settles in one pass.
+    /// Run with `cargo test -- --ignored`.
+    #[test]
+    #[ignore = "reads ../ZubuvZpevnik"]
+    fn tidy_settles_in_one_pass_on_every_songbook_song() {
+        for file in super::super::songbook_songs() {
+            let text = std::fs::read_to_string(&file).unwrap();
+            let (once, _) = tidy(&text);
+            let (twice, changes) = tidy(&once);
+            assert!(changes.is_empty(), "{}: {changes:?}", file.display());
+            assert_eq!(twice, once, "{}", file.display());
+        }
+    }
 
     fn chorus(head: &str, body: &str, tail: &str) -> String {
         format!("\\beginchorus{head}\n{body}\\endchorus{tail}\n\n")
@@ -1648,6 +1682,27 @@ mod tests {
     }
 
     #[test]
+    fn a_chord_inside_a_one_syllable_word_goes_to_its_start_in_any_language() {
+        // The user: a chord cannot be sung on the "n" of "on".
+        assert_eq!(
+            tidied_line("english", "Walking o\\[G]n the wo\\[D]rld, stre\\[Em]ngth"),
+            "Walking \\[G]on the \\[D]world, \\[Em]strength"
+        );
+        // Two vowel groups may be one syllable in English ("fire", "like")
+        // or two ("fiery"), which the patterns cannot tell: those stay.
+        assert_eq!(
+            tidied_line("english", "fi\\[Am]re li\\[F]ke"),
+            "fi\\[Am]re li\\[F]ke"
+        );
+        // Czech has syllables with no vowel (te-prv, vlk), which its
+        // patterns know: the chord on "prv" is where it belongs.
+        assert_eq!(
+            tidied_line("czech", "pak te\\[D]prv se"),
+            "pak te\\[D]prv se"
+        );
+    }
+
+    #[test]
     fn a_chord_moves_back_over_the_consonants_opening_its_syllable() {
         assert_eq!(
             tidied_line(
@@ -1668,10 +1723,12 @@ mod tests {
         // Czech patterns find every syllable: back over the vowel too.
         assert_eq!(tidied_line("czech", "po schodec\\[F]h"), "po scho\\[F]dech");
         assert_eq!(tidied_line("czech", "po schode\\[F]ch"), "po scho\\[F]dech");
-        // English ones miss syllables ("a-way"): only "ch" is kept whole.
+        // English ones miss syllables ("a-way"): only "ch" is kept whole,
+        // and a word of one vowel group is one syllable anyway.
+        assert_eq!(tidied_line("english", "teac\\[C]hing"), "tea\\[C]ching");
         assert_eq!(
             tidied_line("english", "so muc\\[C]h more"),
-            "so mu\\[C]ch more"
+            "so \\[C]much more"
         );
         assert_eq!(tidied_line("english", "awa\\[C]y"), "awa\\[C]y");
     }

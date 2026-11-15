@@ -110,7 +110,9 @@ fn build_client() -> Result<reqwest::Client, reqwest::Error> {
         .build()
 }
 
-/// Fetches a page, retrying the refusals that are worth retrying.
+/// Fetches a page, retrying the refusals that are worth retrying. The
+/// wording of its errors is read by ZubuvZpevnikUi, which tells the kinds
+/// of failure apart by it (CLAUDE.md lists the phrases).
 async fn fetch_html(url: &str) -> Result<String, String> {
     let client = build_client().map_err(|e| format!("Could not set the HTTP client up: {}", e))?;
 
@@ -376,7 +378,8 @@ fn write_stdout(text: &str) -> Result<(), String> {
     }
 }
 
-/// Tells the user, on stderr, what tidying changed and where.
+/// Tells the user, on stderr, what tidying changed and where, as
+/// `<name>:<line>: <description>`, which ZubuvZpevnikUi reads (CLAUDE.md).
 fn report_changes(name: &str, changes: &[tex::tidy::Change]) {
     for change in changes {
         eprintln!("{}:{}: {}", name, change.line, change.description);
@@ -567,63 +570,17 @@ fn list_proposals(
     }
 
     if json {
-        let proposals: Vec<serde_json::Value> = shown
-            .iter()
-            .map(|p| {
-                serde_json::json!({
-                    "id": p.id,
-                    "kind": p.kind,
-                    "stage": p.stage as u8,
-                    "line": p.line,
-                    "description": p.description,
-                    "gain_lines": p.gain_lines,
-                    "score": p.score,
-                    "grade": p.grade(),
-                    "category": p.category(),
-                    "dismiss": tex::fit::dismissal(&text, p).map(|e| serde_json::json!({
-                        "start": e.span.start,
-                        "end": e.span.end,
-                        "replacement": e.replacement,
-                    })),
-                    "sources": p.sources.iter().map(|s| serde_json::json!({
-                        "line": s.line,
-                        "start": s.span.start,
-                        "end": s.span.end,
-                    })).collect::<Vec<_>>(),
-                    "edits": p.edits.iter().map(|e| serde_json::json!({
-                        "start": e.span.start,
-                        "end": e.span.end,
-                        "replacement": e.replacement,
-                    })).collect::<Vec<_>>(),
-                })
-            })
-            .collect();
-        let measured: serde_json::Map<String, serde_json::Value> = measured
-            .iter()
-            .map(|(paper, m)| {
-                (
-                    paper.clone(),
-                    serde_json::json!({
-                        "pages": m.pages,
-                        "wraps": m.wraps.iter().map(|w| serde_json::json!({
-                            "line": w.line,
-                            "in_chorus": w.in_chorus,
-                        })).collect::<Vec<_>>(),
-                        "fits": m.fits(pages_allowed(&text, paper)),
-                    }),
-                )
-            })
-            .collect();
-        let out = serde_json::json!({
-            "file": file.display().to_string(),
-            "fit": fit,
-            "fits": fits,
-            "measured": measured,
-            "note": note,
-            "proposals": proposals,
-            "not_joined": not_joined,
-        });
-        return write_stdout(&format!("{}\n", out));
+        let out = json_listing(
+            file,
+            &text,
+            fit,
+            fits,
+            &measured,
+            &note,
+            &shown,
+            &not_joined,
+        );
+        return write_stdout(&format!("{out}\n"));
     }
 
     let mut out = format!("{}\n", file.display());
@@ -714,6 +671,79 @@ fn list_proposals(
         ));
     }
     write_stdout(&out)
+}
+
+/// The listing as a program reads it, what `--json` prints. Its shape is
+/// part of the interface (CLAUDE.md): ZubuvZpevnikUi reads every field,
+/// so a change here is a version bump, and the test
+/// `the_json_listing_keeps_its_shape` pins it.
+#[allow(clippy::too_many_arguments)]
+fn json_listing(
+    file: &Path,
+    text: &str,
+    fit: Option<&str>,
+    fits: Option<bool>,
+    measured: &BTreeMap<String, tex::measure::Measured>,
+    note: &str,
+    shown: &[&tex::fit::Proposal],
+    not_joined: &[String],
+) -> serde_json::Value {
+    let proposals: Vec<serde_json::Value> = shown
+        .iter()
+        .map(|p| {
+            serde_json::json!({
+                "id": p.id,
+                "kind": p.kind,
+                "stage": p.stage as u8,
+                "line": p.line,
+                "description": p.description,
+                "gain_lines": p.gain_lines,
+                "score": p.score,
+                "grade": p.grade(),
+                "category": p.category(),
+                "dismiss": tex::fit::dismissal(text, p).map(|e| serde_json::json!({
+                    "start": e.span.start,
+                    "end": e.span.end,
+                    "replacement": e.replacement,
+                })),
+                "sources": p.sources.iter().map(|s| serde_json::json!({
+                    "line": s.line,
+                    "start": s.span.start,
+                    "end": s.span.end,
+                })).collect::<Vec<_>>(),
+                "edits": p.edits.iter().map(|e| serde_json::json!({
+                    "start": e.span.start,
+                    "end": e.span.end,
+                    "replacement": e.replacement,
+                })).collect::<Vec<_>>(),
+            })
+        })
+        .collect();
+    let measured: serde_json::Map<String, serde_json::Value> = measured
+        .iter()
+        .map(|(paper, m)| {
+            (
+                paper.clone(),
+                serde_json::json!({
+                    "pages": m.pages,
+                    "wraps": m.wraps.iter().map(|w| serde_json::json!({
+                        "line": w.line,
+                        "in_chorus": w.in_chorus,
+                    })).collect::<Vec<_>>(),
+                    "fits": m.fits(pages_allowed(text, paper)),
+                }),
+            )
+        })
+        .collect();
+    serde_json::json!({
+        "file": file.display().to_string(),
+        "fit": fit,
+        "fits": fits,
+        "measured": measured,
+        "note": note,
+        "proposals": proposals,
+        "not_joined": not_joined,
+    })
 }
 
 /// Whether a change that lengthens lines makes the song worse on the
@@ -1465,5 +1495,167 @@ mod tests {
         for arg in ["--help", "-h", "help"] {
             assert_eq!(parse_args(&args(&[arg])), Ok(Command::Help), "{arg}");
         }
+    }
+
+    /// What `--json` prints, field by field: ZubuvZpevnikUi reads this
+    /// shape, so a change to it is a change of the interface (CLAUDE.md),
+    /// with a version bump and a note to the UI. The offsets are bytes
+    /// into the song; `measured` is as the typesetter would report it.
+    #[test]
+    fn the_json_listing_keeps_its_shape() {
+        use serde_json::json;
+        use tex::measure::{Measured, Wrap};
+        let text = "\\beginsong{T}[\n    lang={czech},\n]\n\n\
+            \\beginverse\n    \\[C]vím že \\[G]přijdeš\n\\endverse\n\n\
+            \\beginchorus\n    \\[F]Refrén \\[G]zní\n\\endchorus\n\n\
+            \\beginverse\n    \\[Am]a vím \\[E]zase\n\\endverse\n\n\
+            \\beginchorus\n    \\[F]Refrén \\[G]zní\n\\endchorus\n\n\\endsong\n";
+        let all = tex::fit::proposals(text);
+
+        // `shrink --fit a5 --measure --json`, on a song that fits A4.
+        let shrink: Vec<&tex::fit::Proposal> = all
+            .iter()
+            .filter(|p| !p.needs_width_check() && !p.is_correction())
+            .collect();
+        let measured = BTreeMap::from([(
+            "a5".to_string(),
+            Measured {
+                pages: 2,
+                wraps: vec![
+                    Wrap {
+                        line: Some(6),
+                        in_chorus: false,
+                    },
+                    Wrap {
+                        line: None,
+                        in_chorus: true,
+                    },
+                ],
+            },
+        )]);
+        let listing = json_listing(
+            Path::new("Song.tex"),
+            text,
+            Some("a5"),
+            Some(false),
+            &measured,
+            "It fits A4: the changes for small paper only.",
+            &shrink,
+            &["verse: one line each, nothing to pair".to_string()],
+        );
+        let first_chorus = json!({"line": 9, "start": 90, "end": 138});
+        assert_eq!(
+            listing,
+            json!({
+                "file": "Song.tex",
+                "fit": "a5",
+                "fits": false,
+                "measured": {
+                    "a5": {
+                        "pages": 2,
+                        "fits": false,
+                        "wraps": [
+                            {"line": 6, "in_chorus": false},
+                            {"line": null, "in_chorus": true},
+                        ],
+                    },
+                },
+                "note": "It fits A4: the changes for small paper only.",
+                "not_joined": ["verse: one line each, nothing to pair"],
+                "proposals": [
+                    {
+                        "id": "insertchorus*@17",
+                        "kind": "insertchorus*",
+                        "stage": 1,
+                        "line": 17,
+                        "description": "the 2nd chorus has the words of the 1st chorus: shorten it to \\insertchorus*",
+                        "gain_lines": 1,
+                        "score": 80,
+                        "grade": "good",
+                        "category": "fit",
+                        "dismiss": null,
+                        "sources": [first_chorus],
+                        "edits": [{"start": 188, "end": 236, "replacement": "\\insertchorus*"}],
+                    },
+                    {
+                        "id": "chordsoff@17",
+                        "kind": "chordsoff",
+                        "stage": 1,
+                        "line": 17,
+                        "description": "the 2nd chorus repeats the chords of the 1st chorus (1 line away): \\chordsoff",
+                        "gain_lines": 1,
+                        "score": 68,
+                        "grade": "fair",
+                        "category": "fit",
+                        "dismiss": null,
+                        "sources": [first_chorus],
+                        "edits": [{"start": 200, "end": 200, "replacement": "\\chordsoff"}],
+                    },
+                    {
+                        "id": "chordsoffonsmallpage@17",
+                        "kind": "chordsoffonsmallpage",
+                        "stage": 2,
+                        "line": 17,
+                        "description": "the 2nd chorus repeats the chords of the 1st chorus (1 line away): \\chordsoffonsmallpage",
+                        "gain_lines": 1,
+                        "score": 68,
+                        "grade": "fair",
+                        "category": "fit",
+                        "dismiss": null,
+                        "sources": [first_chorus],
+                        "edits": [{"start": 200, "end": 200, "replacement": "\\chordsoffonsmallpage"}],
+                    },
+                    {
+                        "id": "smalleronsmallpage@5",
+                        "kind": "smalleronsmallpage",
+                        "stage": 2,
+                        "line": 5,
+                        "description": "set the song a size smaller on small paper (8 pt): \\smalleronsmallpage",
+                        "gain_lines": 1,
+                        "score": 20,
+                        "grade": "last resort",
+                        "category": "fit",
+                        "dismiss": null,
+                        "sources": [],
+                        "edits": [{"start": 36, "end": 36, "replacement": "\\smalleronsmallpage\n\n"}],
+                    },
+                ],
+            })
+        );
+
+        // `check --json`: a correction, with the edit that marks it right.
+        let corrections: Vec<&tex::fit::Proposal> =
+            all.iter().filter(|p| p.is_correction()).collect();
+        let listing = json_listing(
+            Path::new("Song.tex"),
+            text,
+            None,
+            None,
+            &BTreeMap::new(),
+            "",
+            &corrections,
+            &[],
+        );
+        assert_eq!(listing["fit"], json!(null));
+        assert_eq!(listing["fits"], json!(null));
+        assert_eq!(listing["measured"], json!({}));
+        assert_eq!(listing["not_joined"], json!([]));
+        assert_eq!(
+            listing["proposals"],
+            json!([{
+                "id": "comma@6",
+                "kind": "comma",
+                "stage": 1,
+                "line": 6,
+                "description": "verse 1: \"vím že\" may want a comma before \"že\"",
+                "gain_lines": 0,
+                "score": 0,
+                "grade": "correction",
+                "category": "typo",
+                "dismiss": {"start": 48, "end": 48, "replacement": "    % nocheck\n"},
+                "sources": [],
+                "edits": [{"start": 60, "end": 60, "replacement": ","}],
+            }])
+        );
     }
 }

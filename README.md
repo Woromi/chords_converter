@@ -112,10 +112,16 @@ it, so it is never left half written.
   syllable in front of it. Syllables come from the TeX hyphenation patterns
   for the song's `lang`. Those patterns don't know every syllable (English
   ones find none in "melodies"), so a chord only moves back across
-  consonants, never across a vowel. The one exception is Czech and Slovak,
-  for the consonants closing a word's last syllable: `schodec\[F]h` becomes
-  `scho\[F]dech`. And a chord never stays between the two letters of
-  `ch`. This one does change where a chord prints, which is the point.
+  consonants, never across a vowel. Two exceptions. In English, a word
+  whose vowels stand together (`on`, `world`, `strength`) is one syllable
+  whatever the patterns say, so a chord inside it goes to its start
+  (`o\[G]n` becomes `\[G]on`); not `fire` or `like`, with two vowel
+  groups, which may be one syllable or two. In Czech and Slovak the
+  patterns are trusted (they know the syllabic r of `te-prv`), and a
+  chord on the consonants closing a word's last syllable moves to the
+  syllable's start: `schodec\[F]h` becomes `scho\[F]dech`. And a chord
+  never stays between the two letters of `ch`. This one does change where
+  a chord prints, which is the point.
 
 ### Fitting a page: `shrink`, `join` and `apply`
 

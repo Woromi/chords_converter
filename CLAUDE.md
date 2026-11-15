@@ -29,6 +29,25 @@ runs this tool (as a git submodule, built next to the app) and checks
 the exit codes, the `Saving output to:` lines or the `shrink --json`
 format, and tell the UI (a note in its `docs/`).
 
+**What the app reads from the output is part of the interface too**, and
+keeps its wording unless the version goes up with it:
+
+- on stderr, the phrases it tells failures apart by: `bot check`,
+  `Parser Error: No parser available`, `the request failed`,
+  `the site answered <status>`, `Input Error:`, `Failed to read file`,
+  `Failed to create file`, `Failed to write to file`,
+  `Warning: no song found on`, `Warning: no song data found on`; and the
+  lines it shows the user (`Warning: …`) or drops (`Retrying (…`);
+- the `<file>:<line>: <description>` lines `tidy` and `apply` report
+  each change with;
+- the first line of `--version`, `chords_converter X.Y.Z`;
+- the default output path `out/latex/<Artist>/<Title>.tex`, and that a
+  page with no song on it gives `UnknownArtist/UnknownTitle`;
+- that `tidy -o -` and `apply -o -` print a whole song, `\endsong` included;
+- the `--json` shape, pinned by `the_json_listing_keeps_its_shape` in
+  `main.rs`: a change there fails the test, which is the reminder to
+  bump.
+
 `out/` and `target/` are gitignored. `README.md` is the user-facing manual
 (sites, text input format, bot checks). Keep it in step with the code.
 
