@@ -158,7 +158,7 @@ Song.tex
   | Change | Score | Why |
   |---|---|---|
   | join lines in pairs | 90 | every word and chord stays where it is sung |
-  | an instrumental's row played again, once with `\rep{n}` | 85 | nothing looked up elsewhere, only counted |
+  | an instrumental's row or a chorus reminder again, once with `\rep{n}` | 85 | nothing looked up elsewhere, only counted |
   | the second voice inline on A4 | 85 | every word and chord kept; which words go together read from the brackets |
   | `\insertchorus*` | 80 | one glance back to the chorus, and back |
   | `\chordsoff`, `\chordsoffonsmallpage` inside a part | 75 | the chords a line or two back, in the same part |
@@ -203,9 +203,15 @@ Song.tex
 - **Joining lines: `join`, a command of its own.** Every two lines of every
   part of a kind (all verses, say) become one: fewer, longer lines, all of
   one musical length again. It is offered only if every part of the kind
-  can be joined alike (no comment, chord switch, `\textnote`, `\if…` or
-  `\rep` before a part's last line in the way), and only once the joined
-  song is typeset with no line too wide on A4 or A5 (nor one already).
+  can be joined alike (no comment, chord switch inside a line, `\textnote`,
+  `\if…` or `\rep` before a part's last line in the way), and only once
+  the joined song is typeset with no line too wide on A4 or A5 (nor one
+  already). A chord switch on a line of its own (`\chordsoff`,
+  `\chordsoffonsmallpage`, `\chordson`) is not in the way: the lines are
+  paired as if it were not there, and it goes back where it was. One that
+  would fall inside a joined line goes to the side that keeps the chords
+  over the whole line, a switch off after it and `\chordson` before it;
+  a switch off after the last pair has nothing left to hide and goes.
   Parts of an odd number of lines keep the last line alone, when every
   part of the kind has that number and the last line is about as long as
   two joined (at least 60% of their letters, on average): a verse of two
@@ -236,7 +242,10 @@ Song.tex
   row is printed once with `\rep{n}` (kind `rep`); a row that already ends
   with `\rep{k}` counts k times. Rows of `^` are left alone: each `^`
   replays the next chord remembered, so rows written alike play different
-  chords. On the songbook: 17 instrumentals in 15 songs.
+  chords. On the songbook: 17 instrumentals in 15 songs. The same goes
+  for a chorus reminder several times in a row, with only empty lines
+  between (the same `\insertchorus*`, number and setup alike):
+  `\insertchorus* \rep{2}`, also kind `rep`. 9 songbook songs.
 - **Chords stay spread out, until the last resort.** The first part of a
   kind always keeps its chords, and a part that loses them should still
   have a chorded neighbour of its kind, on each paper. A change that leaves
@@ -264,7 +273,10 @@ Song.tex
   to the end of `\end…`.
 - **`apply`** finds the proposals afresh in the file as it is, so an id from
   an older `shrink` that no longer applies is refused. Proposals that change
-  the same text are refused together; apply one, then shrink again.
+  the same text are refused together; apply one, then shrink again. An id
+  is `<kind>@<line>`; a second finding of a kind on the same line (two
+  commas wanted in one line) is `<kind>@<line>.2`, and so on, so that each
+  can be applied on its own.
 - **`--fit a5` on a song that doesn't fit A4** lists the changes for every
   paper first and the ones for small paper only after them (a smaller type
   among them: the songbook has none for A4); once A4 fits, only the latter.

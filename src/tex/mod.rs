@@ -217,6 +217,30 @@ pub fn scan(text: &str) -> Scan {
     scan
 }
 
+/// The songs of the songbook next door, for the tests that read it (run
+/// with `cargo test -- --ignored`).
+#[cfg(test)]
+pub(crate) fn songbook_songs() -> Vec<std::path::PathBuf> {
+    fn songs(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+        for entry in std::fs::read_dir(dir).unwrap().flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                songs(&path, out);
+            } else if path.extension().is_some_and(|e| e == "tex") {
+                out.push(path);
+            }
+        }
+    }
+    let mut files = Vec::new();
+    songs(
+        std::path::Path::new("../ZubuvZpevnik/songs/chords"),
+        &mut files,
+    );
+    assert!(files.len() > 100, "songbook not found");
+    files.sort();
+    files
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -296,24 +320,7 @@ mod tests {
     #[test]
     #[ignore = "reads ../ZubuvZpevnik"]
     fn every_songbook_song_scans() {
-        fn songs(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
-            for entry in std::fs::read_dir(dir).unwrap().flatten() {
-                let path = entry.path();
-                if path.is_dir() {
-                    songs(&path, out);
-                } else if path.extension().is_some_and(|e| e == "tex") {
-                    out.push(path);
-                }
-            }
-        }
-        let mut files = Vec::new();
-        songs(
-            std::path::Path::new("../ZubuvZpevnik/songs/chords"),
-            &mut files,
-        );
-        assert!(files.len() > 100, "songbook not found");
-
-        for file in files {
+        for file in songbook_songs() {
             let text = std::fs::read_to_string(&file).unwrap();
             let scan = scan(&text);
             let begins = text

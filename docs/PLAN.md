@@ -199,6 +199,10 @@ part of the identical-output check `\insertchorus` has.
          printed once with `\rep{n}` (`rep`, 85; 17 instrumentals in 15
          songbook songs; rows of `^` left alone), and `join` joins
          instrumental rows bar to bar, the meeting bar line once.
+   - [x] Chorus reminders in a row (the user): the same `\insertchorus*`
+         several times with only empty lines between is printed once with
+         `\rep{n}`, a `shrink` proposal of kind `rep` (not `tidy`, the
+         user). 9 songbook songs.
    - [x] Commands by purpose (0.6.0, decided with the user): `suggest`
          is `shrink` (the old name still works), and corrections moved to
          `check`, since fitting and correcting are different actions: an
@@ -217,7 +221,11 @@ part of the identical-output check `\insertchorus` has.
          wants one between the joined lines and names the lines no rule
          decides; `check` lists a Czech/Slovak clause word inside a line
          with no comma before it (50 on the songbook after leaving out
-         prepositions, particles and "ale").
+         prepositions, particles and "ale"). Two in one line were both
+         `comma@<line>`, so `apply --id` reached only the first (found in
+         the code review): the second is `comma@<line>.2` now, as a second
+         typo on a line was already, and a test asserts every proposal of
+         a song has an id of its own (the songbook too, `--ignored`).
    - [x] Marking a finding right (0.10.0, the user): `% nocheck` above a
          line, `% nocheck <kind>` for the song; `dismiss` in the JSON and
          `apply --dismiss`.
@@ -242,8 +250,11 @@ part of the identical-output check `\insertchorus` has.
          the switch on a line of its own after them. Placed by hand in 40
          songbook parts, it finds the same line in all 40; 80 more parts
          could take it.
-   - [ ] Join lines in a part with a switch inside: `join` refuses the
-         part, though a switch between two pairs could stay alone.
+   - [x] Join lines in a part with a switch inside (the user): the lines
+         pair as if the switch were not there, and it goes back; one that
+         falls inside a joined line moves so the chords show over the whole
+         line (a switch off after it, `\chordson` before it). Three more
+         songbook songs get a join.
    - [ ] The second voice back on A5 (asked by the user, form: inline,
          `\multivoiceinlineonsmallpage`). Not decided where: it adds to
          A5, so it needs typesetting, which `tidy` never does.

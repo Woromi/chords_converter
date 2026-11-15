@@ -378,6 +378,7 @@ pub fn proposals(text: &str) -> Vec<Proposal> {
     proposals.extend(chorus_reminders(text, &scan, &infos, &names));
     proposals.extend(choruses_in_disguise(&infos, &names));
     proposals.extend(repeated_rows(text, &infos, &names));
+    proposals.extend(reminders_in_a_row(text, &scan));
     proposals.extend(typos::typos(&infos, &names, scan.lang.as_deref()));
     proposals.extend(chordlines::chords_across_lines(&infos, &names));
     proposals.extend(chords_off(&names, &infos, Stage::SmallPaper));
@@ -1056,6 +1057,9 @@ fn joined_lines(
             let body = info.part.body.clone();
             let mut sung: Vec<Range<usize>> = Vec::new();
             let mut marks: Vec<Range<usize>> = Vec::new();
+            // Chord switches on a line of their own: the sung lines before
+            // each, its whole line, and whether it turns chords on.
+            let mut switches: Vec<(usize, Range<usize>, bool)> = Vec::new();
             let mut at = body.start;
             for line in text[body.clone()].split_inclusive('\n') {
                 let range = at..at + line.trim_end_matches(['\n', '\r']).len();
@@ -1063,6 +1067,11 @@ fn joined_lines(
                 at += line.len();
                 if is_nocheck_mark(&text[range.clone()]) {
                     marks.push(whole);
+                    continue;
+                }
+                let code = code_of(&text[range.clone()]).trim();
+                if inside::is_switch(code) || code == "\\chordson" {
+                    switches.push((sung.len(), whole, code == "\\chordson"));
                     continue;
                 }
                 if text[range.clone()].trim().is_empty() {
@@ -1086,10 +1095,10 @@ fn joined_lines(
                 refuse(format!("{part} has no lines"));
                 continue 'kind;
             }
-            lines_of.push((part, sung, marks));
+            lines_of.push((part, sung, marks, switches));
         }
 
-        let mut counts: Vec<usize> = lines_of.iter().map(|(_, sung, _)| sung.len()).collect();
+        let mut counts: Vec<usize> = lines_of.iter().map(|(_, sung, _, _)| sung.len()).collect();
         counts.sort();
         counts.dedup();
         let odd = counts.iter().any(|n| n % 2 == 1);
@@ -1115,7 +1124,7 @@ fn joined_lines(
         if odd && !bars {
             let letters = |r: &Range<usize>| lyric_words(code_of(&text[r.clone()])).chars().count();
             let (mut pairs, mut paired, mut alone) = (0, 0, 0);
-            for (_, sung, _) in &lines_of {
+            for (_, sung, _, _) in &lines_of {
                 let (last, rest) = sung.split_last().expect("not empty");
                 alone += letters(last);
                 paired += rest.iter().map(letters).sum::<usize>();
@@ -1143,7 +1152,56 @@ fn joined_lines(
         let mut unsure_case: Vec<String> = Vec::new();
         let mut unsure: Vec<usize> = Vec::new();
         let mut spans = Vec::new();
-        for (&(_, info), (part, sung, marks)) in parts.iter().zip(&lines_of) {
+        // Switches a joined line would have moved, to say so.
+        let mut moved: Vec<String> = Vec::new();
+        for (&(_, info), (part, sung, marks, switches)) in parts.iter().zip(&lines_of) {
+            // The pairs are joined as if the switches were not there, and
+            // each goes back where it was. One that would fall inside a
+            // joined line goes to the side that keeps its chords over the
+            // whole line (the user): a switch off after it, `\chordson`
+            // before it. A switch off after the last pair has nothing left
+            // to hide and goes. The join of the pair takes the switch's
+            // line out with the space between the two.
+            let mut inserts: Vec<(usize, String)> = Vec::new();
+            // Where each switch ends up, in sung lines, for the gain.
+            let mut placed: Vec<(usize, bool)> = Vec::new();
+            for (before, whole, on) in switches {
+                let (before, on) = (*before, *on);
+                if before % 2 == 0 || before >= sung.len() {
+                    placed.push((before, on));
+                    continue;
+                }
+                let switch = text[whole.clone()].trim_end_matches(['\n', '\r']);
+                let line = &text[whole.clone()];
+                let indent = &line[..line.len() - line.trim_start().len()];
+                let word = switch.trim();
+                let number = line_at(text, whole.start);
+                let to = if on { before - 1 } else { before + 1 };
+                if to >= sung.len() {
+                    moved.push(format!("{word} at line {number} dropped, nothing after it"));
+                    continue;
+                }
+                moved.push(format!(
+                    "{word} at line {number} moved {} the joined line",
+                    if on { "before" } else { "after" }
+                ));
+                inserts.push((sung[to].start, format!("{indent}{word}\n")));
+                placed.push((to, on));
+            }
+            // Whether each sung line shows its chords once joined.
+            let shown: Vec<bool> = (0..sung.len())
+                .map(|k| {
+                    let mut on = info.switch == Chords::Shown;
+                    let mut last = 0;
+                    for &(at, turn_on) in &placed {
+                        if at <= k && at >= last {
+                            on = turn_on;
+                            last = at;
+                        }
+                    }
+                    on
+                })
+                .collect();
             for (k, line) in sung.iter().enumerate() {
                 let raw = &text[line.clone()];
                 let code = code_of(raw);
@@ -1232,6 +1290,12 @@ fn joined_lines(
                     .filter(|m| m.start >= end && m.end <= start)
                     .map(|m| text[m.clone()].to_string())
                     .collect();
+                let switch: String = inserts
+                    .iter()
+                    .filter(|(at, _)| *at == pair[0].start)
+                    .map(|(_, word)| word.as_str())
+                    .collect();
+                let between = switch + &between;
                 if !between.is_empty() {
                     edits.push(Edit {
                         span: pair[0].start..pair[0].start,
@@ -1242,10 +1306,28 @@ fn joined_lines(
                 gain += 1;
                 // Two chord rows over two lyric rows become one of each; an
                 // instrumental's row is its chords alone.
-                if !bars && info.switch == Chords::Shown && chorded(&pair[0]) && chorded(&pair[1]) {
+                let k = sung
+                    .iter()
+                    .position(|r| r == &pair[0])
+                    .expect("a sung line");
+                if !bars && shown[k] && chorded(&pair[0]) && chorded(&pair[1]) {
                     gain += 1;
                 }
                 pairs += 1;
+            }
+            // A switch before the line an odd count leaves alone.
+            let pairs_start: Vec<usize> = sung
+                .chunks(2)
+                .filter(|pair| pair.len() == 2)
+                .map(|pair| pair[0].start)
+                .collect();
+            for (at, word) in inserts {
+                if !pairs_start.contains(&at) {
+                    edits.push(Edit {
+                        span: at..at,
+                        replacement: word,
+                    });
+                }
             }
             let first = text[..info.part.span.start].matches('\n').count() + 1;
             let last = text[..info.part.span.end].matches('\n').count() + 1;
@@ -1264,7 +1346,7 @@ fn joined_lines(
             stage: Stage::AllPapers,
             line: first.part.line,
             description: format!(
-                "join every two lines of each {name} into one{alone} ({} lines into {pairs}){}{}{}",
+                "join every two lines of each {name} into one{alone} ({} lines into {pairs}){}{}{}{}",
                 pairs * 2,
                 match (lowered, unsure_case.as_slice()) {
                     (0, _) => String::new(),
@@ -1276,6 +1358,10 @@ fn joined_lines(
                         if words.len() == 1 { "it" } else { "them" },
                         if words.len() == 1 { "it is not" } else { "none is" },
                     ),
+                },
+                match moved.as_slice() {
+                    [] => String::new(),
+                    moved => format!("; {}", moved.join(", ")),
                 },
                 match commas.as_slice() {
                     [] => String::new(),
@@ -1478,6 +1564,88 @@ fn repeated_rows(text: &str, infos: &[PartInfo], names: &Names) -> Vec<Proposal>
             sources: Vec::new(),
             joins: None,
         });
+    }
+    proposals
+}
+
+/// The chorus reminder several times in a row is printed once, with
+/// `\rep{n}` (the user): `\insertchorus*` twice becomes
+/// `\insertchorus* \rep{2}`, the way a reminder sung twice is written.
+/// Only the same reminder (number and setup alike) counts, with nothing
+/// but empty lines between; one already ending in `\rep{k}` counts k
+/// times. A reminder printed on one paper only (`\if…`) stays as it is.
+fn reminders_in_a_row(text: &str, scan: &super::Scan) -> Vec<Proposal> {
+    // Each reminder alone on its line: the line (no newline), what it
+    // reminds of, and how many times.
+    let mut alone: Vec<(Range<usize>, &str, usize)> = Vec::new();
+    for (span, conditional) in &scan.chorus_repeats {
+        let written = &text[span.clone()];
+        if *conditional || !written.starts_with("\\insertchorus*") {
+            continue;
+        }
+        let start = text[..span.start].rfind('\n').map_or(0, |i| i + 1);
+        let end = text[span.end..]
+            .find('\n')
+            .map_or(text.len(), |i| span.end + i);
+        let line = &text[start..end];
+        if !text[start..span.start].trim().is_empty() || code_of(line).len() != line.len() {
+            continue;
+        }
+        let rest = text[span.end..end].trim();
+        let times = if rest.is_empty() {
+            1
+        } else if let Some(k) = rest
+            .strip_prefix("\\rep{")
+            .and_then(|r| r.strip_suffix('}'))
+            .and_then(|k| k.trim().parse::<usize>().ok())
+        {
+            k
+        } else {
+            continue;
+        };
+        alone.push((start..end, written, times));
+    }
+    let mut proposals = Vec::new();
+    let mut k = 0;
+    while k < alone.len() {
+        let (first, written, _) = &alone[k];
+        let mut end = k + 1;
+        while end < alone.len()
+            && alone[end].1 == *written
+            && text[alone[end - 1].0.end..alone[end].0.start]
+                .trim()
+                .is_empty()
+        {
+            end += 1;
+        }
+        if end - k > 1 {
+            let total: usize = alone[k..end].iter().map(|r| r.2).sum();
+            let line = line_at(text, first.start);
+            let indent = {
+                let l = &text[first.clone()];
+                &l[..l.len() - l.trim_start().len()]
+            };
+            proposals.push(Proposal {
+                id: format!("rep@{line}"),
+                kind: "rep",
+                stage: Stage::AllPapers,
+                line,
+                description: format!(
+                    "{written} {} times in a row: print it once with \\rep{{{total}}}",
+                    end - k
+                ),
+                gain_lines: end - k - 1,
+                score: REPEATED_ROWS,
+                edits: vec![Edit {
+                    span: first.start..alone[end - 1].0.end,
+                    replacement: format!("{indent}{written} \\rep{{{total}}}"),
+                }],
+                effects: Vec::new(),
+                sources: Vec::new(),
+                joins: None,
+            });
+        }
+        k = end;
     }
     proposals
 }
@@ -3115,5 +3283,206 @@ mod tests {
             .collect();
         assert_eq!(both.len(), 2, "{:?}", ids(&text));
         assert!(apply(&text, &both).is_err());
+    }
+
+    /// Six lines with the chords switched off after `at` of them.
+    fn switched(at: usize, word: &str) -> String {
+        let lines = [
+            "\\[C]walking down the \\[G]lane,",
+            "\\[Am]looking at the \\[F]rain,",
+            "\\[C]talking to the \\[G]crowd,",
+            "\\[Am]singing it out \\[F]loud,",
+            "\\[C]waiting for the \\[G]train,",
+            "\\[Am]coming home a\\[F]gain.",
+        ];
+        let mut with: Vec<&str> = lines.to_vec();
+        with.insert(at, word);
+        song(&part("\\beginverse", &with))
+    }
+
+    fn joined(text: &str) -> (Proposal, String) {
+        let p = proposals(text)
+            .into_iter()
+            .find(|p| p.kind == "joinlines")
+            .unwrap_or_else(|| panic!("{:?}", ids(text)));
+        let out = apply(text, &[&p]).unwrap();
+        (p, out)
+    }
+
+    #[test]
+    fn a_switch_between_two_pairs_stays_between_them() {
+        let (p, out) = joined(&switched(2, "\\chordsoffonsmallpage"));
+        assert!(
+            out.contains(
+                "\\beginverse\n    \\[C]walking down the \\[G]lane, \\[Am]looking at the \\[F]rain,\n    \\chordsoffonsmallpage\n    \\[C]talking"
+            ),
+            "{out}"
+        );
+        assert!(!p.description.contains("moved"), "{}", p.description);
+        // Only the first pair shows two chord rows that become one.
+        assert_eq!(p.gain_lines, 4);
+    }
+
+    #[test]
+    fn a_switch_inside_a_pair_goes_after_it_so_the_chords_show_over_the_whole_line() {
+        let (p, out) = joined(&switched(3, "\\chordsoff"));
+        assert!(
+            out.contains(
+                "\\[C]talking to the \\[G]crowd, \\[Am]singing it out \\[F]loud,\n    \\chordsoff\n    \\[C]waiting"
+            ),
+            "{out}"
+        );
+        assert_eq!(out.matches("\\chordsoff").count(), 1, "{out}");
+        assert!(
+            p.description
+                .contains("\\chordsoff at line 9 moved after the joined line"),
+            "{}",
+            p.description
+        );
+        assert_eq!(p.gain_lines, 5);
+    }
+
+    #[test]
+    fn chords_switched_back_on_inside_a_pair_go_on_before_it() {
+        let text = switched(3, "\\chordson").replace("\\beginverse\n", "\\beginverse\\chordsoff\n");
+        let (p, out) = joined(&text);
+        assert!(
+            out.contains(
+                "rain,\n    \\chordson\n    \\[C]talking to the \\[G]crowd, \\[Am]singing"
+            ),
+            "{out}"
+        );
+        assert!(p.description.contains("moved before"), "{}", p.description);
+    }
+
+    #[test]
+    fn a_switch_inside_the_last_pair_has_nothing_left_to_hide() {
+        let (p, out) = joined(&switched(5, "\\chordsoff"));
+        assert!(!out.contains("\\chordsoff"), "{out}");
+        assert!(p.description.contains("dropped"), "{}", p.description);
+    }
+
+    #[test]
+    fn a_switch_before_the_line_left_alone_stays_before_it() {
+        // Five lines: the switch after the third goes before the fifth.
+        let text = song(&part(
+            "\\beginverse",
+            &[
+                "\\[C]walking down the \\[G]lane and on and on,",
+                "\\[Am]looking at the \\[F]rain,",
+                "\\[C]talking to the \\[G]crowd,",
+                "\\chordsoff",
+                "\\[Am]singing it out \\[F]loud,",
+                "\\[C]waiting for the \\[G]train to take me home again.",
+            ],
+        ));
+        let (_, out) = joined(&text);
+        assert!(
+            out.contains("loud,\n    \\chordsoff\n    \\[C]waiting"),
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn reminders_in_a_row_print_once_with_their_count() {
+        let text = song(
+            &[
+                part("\\beginchorus", &["\\[C]Hello \\[G]there,", "\\[F]hello"]),
+                "\\insertchorus*\n\n\\insertchorus* \\rep{2}\n\\insertchorus*\n\n".into(),
+                part("\\beginverse", &["\\[C]A verse"]),
+            ]
+            .concat(),
+        );
+        let p = proposals(&text)
+            .into_iter()
+            .find(|p| p.kind == "rep")
+            .unwrap_or_else(|| panic!("{:?}", ids(&text)));
+        assert_eq!(p.id, "rep@10");
+        assert_eq!(p.gain_lines, 2);
+        assert!(
+            p.description.contains("3 times in a row"),
+            "{}",
+            p.description
+        );
+        let out = apply(&text, &[&p]).unwrap();
+        assert!(
+            out.contains("\\endchorus\n\n\\insertchorus* \\rep{4}\n\n\\beginverse"),
+            "{out}"
+        );
+        assert!(!proposals(&out).iter().any(|p| p.kind == "rep"));
+    }
+
+    #[test]
+    fn different_reminders_or_something_between_keep_them_apart() {
+        let chorus = |n: &str| part(&format!("\\beginchorus[{n}]"), &["\\[C]Hello"]);
+        let numbered = [
+            chorus("1"),
+            chorus("2"),
+            "\\insertchorus*[1]\n\\insertchorus*[2]\n".into(),
+        ];
+        let between = [
+            chorus("1"),
+            "\\insertchorus*\n% the band plays\n\\insertchorus*\n".into(),
+        ];
+        let conditional = [
+            chorus("1"),
+            "\\insertchorus*\n\\iflargepaper\\insertchorus*\\fi\n".into(),
+        ];
+        for parts in [&numbered[..], &between[..], &conditional[..]] {
+            let text = song(&parts.concat());
+            assert!(!proposals(&text).iter().any(|p| p.kind == "rep"), "{text}");
+        }
+    }
+
+    /// Fails with the first id two proposals of a song share.
+    fn assert_distinct(ids: &[String], song: &str) {
+        let mut seen = std::collections::HashSet::new();
+        for id in ids {
+            assert!(seen.insert(id), "{song}: {id} twice in {ids:?}");
+        }
+    }
+
+    /// `apply --id` finds a proposal by its id, so no two may share one:
+    /// a song with findings of many kinds, several on one line.
+    #[test]
+    fn every_proposal_has_an_id_of_its_own() {
+        let row = "| \\[Am]\\[] | \\[G]\\[] |";
+        let text = song(
+            &[
+                part("\\begininstrumental", &[row, row]),
+                part("\\beginverse", &V),
+                part(
+                    "\\beginchorus",
+                    &["\\[C]Hello \\[G]there,", "\\[F]hello I'll stay"],
+                ),
+                part("\\beginverse", &W),
+                part(
+                    "\\beginchorus",
+                    &["\\[C]Hello \\[G]there,", "\\[F]hello Ill stay"],
+                ),
+                part(
+                    "\\beginverse",
+                    &["\\[C]vím že přijdeš když zavolám", "\\[G]a vím že víš"],
+                ),
+            ]
+            .concat(),
+        );
+        let ids = ids(&text);
+        assert_distinct(&ids, "the song");
+        // The kinds the song was built to have are there to be told apart.
+        for kind in ["rep@", "chordsoff", "typo@", "comma@"] {
+            assert!(ids.iter().any(|id| id.starts_with(kind)), "{kind}: {ids:?}");
+        }
+    }
+
+    /// The same over every song in the songbook next door. Run with
+    /// `cargo test -- --ignored`.
+    #[test]
+    #[ignore = "reads ../ZubuvZpevnik"]
+    fn every_songbook_song_gets_distinct_proposal_ids() {
+        for file in super::super::songbook_songs() {
+            let text = std::fs::read_to_string(&file).unwrap();
+            assert_distinct(&ids(&text), &file.display().to_string());
+        }
     }
 }

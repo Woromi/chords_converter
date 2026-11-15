@@ -211,6 +211,16 @@ fn sung_lines(text: &str, infos: &[PartInfo]) -> Vec<Sung> {
     lines
 }
 
+/// `<kind>@<line>` for the first finding of a kind on a line, and
+/// `<kind>@<line>.2`, `.3` for the others on the same line, so that each
+/// can be applied or dismissed on its own: `apply --id` finds a proposal
+/// by its id, and two with one id would leave the second out of reach.
+fn numbered(base: String, seen: &mut HashMap<String, usize>) -> String {
+    let n = seen.entry(base.clone()).or_insert(0);
+    *n += 1;
+    if *n == 1 { base } else { format!("{base}.{n}") }
+}
+
 fn correction(
     id: String,
     kind: &'static str,
@@ -384,6 +394,7 @@ const NO_COMMA_AFTER: &[&str] = &[
 /// at the start of a line, whose end stands for the comma.
 fn missing_commas(lines: &[Sung], text: &str, names: &Names) -> Vec<Proposal> {
     let mut proposals = Vec::new();
+    let mut ids = HashMap::new();
     for sung in lines {
         for pair in sung.words.windows(2) {
             let (before, word) = (&pair[0], &pair[1]);
@@ -411,7 +422,7 @@ fn missing_commas(lines: &[Sung], text: &str, names: &Names) -> Vec<Proposal> {
                 continue;
             }
             proposals.push(correction(
-                format!("comma@{}", sung.line),
+                numbered(format!("comma@{}", sung.line), &mut ids),
                 "comma",
                 sung.line,
                 format!(
@@ -509,16 +520,8 @@ fn copies_differing(lines: &[Sung], names: &Names) -> Vec<Proposal> {
                 "a chord sits inside the word, so fix it by hand".to_string(),
             )
         };
-        let base = format!("typo@{}", sung.line);
-        let seen = ids.entry(base.clone()).or_insert(0);
-        *seen += 1;
-        let id = if *seen == 1 {
-            base
-        } else {
-            format!("{base}.{seen}")
-        };
         proposals.push(correction(
-            id,
+            numbered(format!("typo@{}", sung.line), &mut ids),
             "typo",
             sung.line,
             format!(
@@ -727,6 +730,20 @@ mod tests {
         assert_eq!(found.len(), 1);
         assert!(found[0].edits.is_empty());
         assert!(found[0].description.ends_with("fix it by hand"));
+    }
+
+    #[test]
+    fn two_commas_on_one_line_are_two_findings_each_with_its_own_id() {
+        let text = song(
+            "czech",
+            &[("\\beginverse", &["\\[C]vím že přijdeš když zavolám"])],
+        );
+        let found = checked(&text);
+        let ids: Vec<&str> = found.iter().map(|p| p.id.as_str()).collect();
+        assert_eq!(ids, ["comma@6", "comma@6.2"], "{found:?}");
+        // The second can be applied on its own.
+        let out = apply(&text, &[&found[1]]).unwrap();
+        assert!(out.contains("vím že přijdeš, když zavolám"), "{out}");
     }
 
     #[test]
