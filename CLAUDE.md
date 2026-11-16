@@ -22,7 +22,7 @@ cargo run -- <url|file.html|file.txt|-> [latex|text|debug]
                                    # writes out/<format>/<Artist>/<Title>.<ext>
 ```
 
-**The version in `Cargo.toml` is part of the interface.** ZubuvZpevnikUi
+**The version in `Cargo.toml` is part of the interface.** ZubuvZpevnikar
 runs this tool (as a git submodule, built next to the app) and checks
 `chords_converter --version` against a minimum. Raise the minor version
 (`0.13.0` → `0.14.0`) in the same commit as any change to the command line,

@@ -50,7 +50,7 @@ const ATTEMPTS: u32 = 3;
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// How long fetching may take in all, pauses and retries included.
-/// ZubuvZpevnikUi stops the converter after 60 s, and a message saying the
+/// ZubuvZpevnikar stops the converter after 60 s, and a message saying the
 /// site would not answer is worth more than a last try nobody hears of.
 const FETCH_BUDGET: Duration = Duration::from_secs(50);
 
@@ -138,7 +138,7 @@ fn build_client() -> Result<reqwest::Client, reqwest::Error> {
 }
 
 /// Fetches a page, retrying the refusals that are worth retrying. The
-/// wording of its errors is read by ZubuvZpevnikUi, which tells the kinds
+/// wording of its errors is read by ZubuvZpevnikar, which tells the kinds
 /// of failure apart by it (CLAUDE.md lists the phrases).
 async fn fetch_html(url: &str) -> Result<String, String> {
     let client = build_client().map_err(|e| format!("Could not set the HTTP client up: {}", e))?;
@@ -355,7 +355,7 @@ fn default_path(song: &Song, format: &str, printer: &dyn SongPrinter) -> PathBuf
 
 /// Writes the song where it was asked to go, tidied first when asked to be.
 /// The two lines printed on the way are what a caller reads the path from
-/// (ZubuvZpevnikUi does), so they keep their wording.
+/// (ZubuvZpevnikar does), so they keep their wording.
 fn save_song(
     song: &Song,
     format: &str,
@@ -409,7 +409,7 @@ fn write_stdout(text: &str) -> Result<(), String> {
 }
 
 /// Tells the user, on stderr, what tidying changed and where, as
-/// `<name>:<line>: <description>`, which ZubuvZpevnikUi reads (CLAUDE.md).
+/// `<name>:<line>: <description>`, which ZubuvZpevnikar reads (CLAUDE.md).
 fn report_changes(name: &str, changes: &[tex::tidy::Change]) {
     for change in changes {
         eprintln!("{}:{}: {}", name, change.line, change.description);
@@ -705,7 +705,7 @@ fn list_proposals(
 }
 
 /// The listing as a program reads it, what `--json` prints. Its shape is
-/// part of the interface (CLAUDE.md): ZubuvZpevnikUi reads every field,
+/// part of the interface (CLAUDE.md): ZubuvZpevnikar reads every field,
 /// so a change here is a version bump, and the test
 /// `the_json_listing_keeps_its_shape` pins it.
 #[allow(clippy::too_many_arguments)]
@@ -1356,7 +1356,7 @@ mod tests {
         }
     }
 
-    /// ZubuvZpevnikUi runs `chords_converter <source> latex`; that form has to
+    /// ZubuvZpevnikar runs `chords_converter <source> latex`; that form has to
     /// mean what it always meant.
     #[test]
     fn the_original_form_still_works() {
@@ -1545,7 +1545,7 @@ mod tests {
         );
     }
 
-    /// The whole of fetching stays under ZubuvZpevnikUi's 60 s: a site
+    /// The whole of fetching stays under ZubuvZpevnikar's 60 s: a site
     /// that lets every request run into its timeout gets a second try cut
     /// to what is left of the budget, and no third.
     #[test]
@@ -1582,7 +1582,7 @@ mod tests {
         }
     }
 
-    /// What `--json` prints, field by field: ZubuvZpevnikUi reads this
+    /// What `--json` prints, field by field: ZubuvZpevnikar reads this
     /// shape, so a change to it is a change of the interface (CLAUDE.md),
     /// with a version bump and a note to the UI. The offsets are bytes
     /// into the song; `measured` is as the typesetter would report it.

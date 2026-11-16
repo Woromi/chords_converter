@@ -1,7 +1,7 @@
 # Plan: songbook formatting
 
 The converter produces songs closer to what goes into the songbook, and helps
-make them fit a page. `../ZubuvZpevnikUi` drives it as a subprocess. The
+make them fit a page. The ZubuvZpevnikar app (Zpěvníkář) drives it as a subprocess. The
 converter owns this logic, and the UI only shows and applies results. The UI's
 own `docs/PLAN.md` items for chorus `\chordsoff`, fit-to-page and `lang`
 detection move here. The UI session updates its plan; this repo doesn't edit
@@ -31,7 +31,7 @@ tidy code over the text, so there is one implementation.
 ## Command line
 
 The UI runs `chords_converter <source> latex` and reads `Saving output to:
-out/latex/<Artist>/<Title>.tex` (`ZubuvZpevnikUi/core/src/songimport.cpp`).
+out/latex/<Artist>/<Title>.tex` (`ZubuvZpevnikar/core/src/songimport.cpp`).
 That form keeps working. Its output changes only through tier-1 improvements.
 
 ```
