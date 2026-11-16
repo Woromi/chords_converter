@@ -1687,30 +1687,54 @@ fn list_words(words: &[String]) -> String {
     }
 }
 
-/// Whether a person marked a finding right: `% nocheck` on the line above
-/// the one it is about, or `% nocheck <kind>` anywhere in the song.
+/// The kinds of finding about the whole song, not about a line: their mark
+/// may stand anywhere in the song.
+const SONG_WIDE_KINDS: [&str; 2] = ["apostrophes", "tie"];
+
+/// The kinds a `% nocheck` line names (`% nocheck comma typo`); empty for a
+/// bare `% nocheck`, which stands for every kind. `None` for any other line.
+pub(super) fn nocheck_kinds(line: &str) -> Option<Vec<String>> {
+    let rest = line.trim().strip_prefix('%')?.trim_start();
+    let kinds = rest.strip_prefix("nocheck")?;
+    // "nocheckx" is no mark; the kinds follow after blanks.
+    if !kinds.is_empty() && !kinds.starts_with([' ', '\t']) {
+        return None;
+    }
+    Some(kinds.split_whitespace().map(str::to_string).collect())
+}
+
+/// Whether a person marked a finding right. A mark is a line of its own
+/// above the line a finding is about (several marks may stand there, one
+/// above the other): `% nocheck <kind> …` confirms the findings of those
+/// kinds on that line, a bare `% nocheck` (older songs) all of them. A
+/// finding about the whole song (apostrophes, ties) is confirmed by
+/// `% nocheck <kind>` anywhere in the song.
 fn marked_right(text: &str, p: &Proposal) -> bool {
     let lines: Vec<&str> = text.lines().collect();
-    let above = p.line.checked_sub(2).and_then(|i| lines.get(i));
-    let mark = |line: &str| -> Option<String> {
-        is_nocheck_mark(line).then(|| {
-            line.trim()[1..].trim_start()["nocheck".len()..]
-                .trim()
-                .to_string()
-        })
-    };
-    above
-        .and_then(|l| mark(l))
-        .is_some_and(|kind| kind.is_empty())
-        || lines
+    if SONG_WIDE_KINDS.contains(&p.kind) {
+        return lines
             .iter()
-            .any(|l| mark(l).is_some_and(|kind| kind == p.kind))
+            .any(|l| nocheck_kinds(l).is_some_and(|kinds| kinds.iter().any(|k| k == p.kind)));
+    }
+    // The marks right above the finding's line (p.line is 1-based).
+    let mut above = p.line.saturating_sub(1);
+    while above > 0 {
+        above -= 1;
+        let Some(kinds) = lines.get(above).and_then(|l| nocheck_kinds(l)) else {
+            break;
+        };
+        if kinds.is_empty() || kinds.iter().any(|k| k == p.kind) {
+            return true;
+        }
+    }
+    false
 }
 
 /// The edit that marks a finding right, so `check` leaves it out from then
-/// on: `% nocheck` on a line of its own above the line it is about, or for
-/// a finding about the whole song (apostrophes, ties) `% nocheck <kind>`
-/// before its first part. `None` for a proposal that is no correction.
+/// on: `% nocheck <kind>` on a line of its own above the line it is about
+/// (added to a kinded mark already there), or for a finding about the whole
+/// song (apostrophes, ties) before its first part. `None` for a proposal
+/// that is no correction.
 pub fn dismissal(text: &str, p: &Proposal) -> Option<Edit> {
     if !p.is_correction() {
         return None;
@@ -1721,28 +1745,38 @@ pub fn dismissal(text: &str, p: &Proposal) -> Option<Edit> {
             .map(str::len)
             .sum()
     };
-    if matches!(p.kind, "apostrophes" | "tie") {
+    if SONG_WIDE_KINDS.contains(&p.kind) {
         let first = scan(text).parts.first()?.line;
         return Some(Edit {
             span: line_start(first)..line_start(first),
             replacement: format!("% nocheck {}\n", p.kind),
         });
     }
+    // A kinded mark right above: the kind joins it.
+    if p.line >= 2 {
+        let above_at = line_start(p.line - 1);
+        let above = text[above_at..].lines().next().unwrap_or("");
+        if let Some(kinds) = nocheck_kinds(above).filter(|k| !k.is_empty()) {
+            let indent = &above[..above.len() - above.trim_start().len()];
+            return Some(Edit {
+                span: above_at..above_at + above.len(),
+                replacement: format!("{indent}% nocheck {} {}", kinds.join(" "), p.kind),
+            });
+        }
+    }
     let at = line_start(p.line);
     let line = text[at..].lines().next().unwrap_or("");
     let indent = &line[..line.len() - line.trim_start().len()];
     Some(Edit {
         span: at..at,
-        replacement: format!("{indent}% nocheck\n"),
+        replacement: format!("{indent}% nocheck {}\n", p.kind),
     })
 }
 
-/// A line of its own that tells `check` a finding is right: `% nocheck`
-/// for the line below it, `% nocheck <kind>` for the kind in the whole song.
+/// A line of its own that tells `check` a finding is right (see
+/// `marked_right`).
 pub(super) fn is_nocheck_mark(line: &str) -> bool {
-    line.trim()
-        .strip_prefix('%')
-        .is_some_and(|rest| rest.trim_start().starts_with("nocheck"))
+    nocheck_kinds(line).is_some()
 }
 
 /// The last resort on small paper: the whole song a type size smaller
@@ -3142,12 +3176,13 @@ mod tests {
             .filter(|p| p.kind == "comma")
             .collect();
         assert_eq!(found.len(), 2);
-        // The mark goes on a line of its own above, indented like the line.
+        // The mark goes on a line of its own above, indented like the line,
+        // and names the kind it confirms.
         let edit = dismissal(&text, &found[0]).unwrap();
         let mut marked = text.clone();
         marked.replace_range(edit.span.clone(), &edit.replacement);
         assert!(
-            marked.contains("\\beginverse\n    % nocheck\n    \\[C]Vím že"),
+            marked.contains("\\beginverse\n    % nocheck comma\n    \\[C]Vím že"),
             "{marked}"
         );
         let left: Vec<String> = proposals(&marked)
@@ -3156,9 +3191,37 @@ mod tests {
             .map(|p| p.id)
             .collect();
         assert_eq!(left.len(), 1, "{left:?}");
-        // `% nocheck comma` anywhere: none of the kind.
-        let all_marked = text.replacen("\\beginverse", "% nocheck comma\n\\beginverse", 1);
-        assert!(!proposals(&all_marked).iter().any(|p| p.kind == "comma"));
+        let commas = |t: &str| proposals(t).iter().filter(|p| p.kind == "comma").count();
+        // Another kind is not confirmed by it, a bare mark (older songs)
+        // confirms every kind, and several kinds share one mark.
+        let mark =
+            |kinds: &str| text.replacen("\\[C]Vím že", &format!("{kinds}\n    \\[C]Vím že"), 1);
+        let other = mark("% nocheck typo");
+        assert_eq!(commas(&other), 2);
+        let bare = mark("% nocheck");
+        assert_eq!(commas(&bare), 1);
+        let both = mark("% nocheck typo comma");
+        assert_eq!(commas(&both), 1);
+        // A kinded mark already above: the new kind joins it.
+        let typo_marked = mark("% nocheck typo");
+        let comma = proposals(&typo_marked)
+            .into_iter()
+            .filter(|p| p.kind == "comma")
+            .min_by_key(|p| p.line) // the first verse's, under the mark
+            .unwrap();
+        let edit = dismissal(&typo_marked, &comma).unwrap();
+        let mut joined = typo_marked.clone();
+        joined.replace_range(edit.span.clone(), &edit.replacement);
+        assert!(joined.contains("% nocheck typo comma\n"), "{joined}");
+        // A kinded mark elsewhere is about its own line only, no longer the
+        // whole song.
+        let elsewhere = text.replacen("\\beginverse", "% nocheck comma\n\\beginverse", 1);
+        assert_eq!(commas(&elsewhere), 2);
+        assert_eq!(nocheck_kinds("  % nocheck"), Some(vec![]));
+        let two: Vec<String> = vec!["comma".into(), "typo".into()];
+        assert_eq!(nocheck_kinds("%nocheck comma typo"), Some(two));
+        assert_eq!(nocheck_kinds("% nocheckx"), None);
+        assert_eq!(nocheck_kinds("\\[C]la % nocheck"), None);
         // A mark inside a part goes along above a joined line.
         let (out, _) = czech_join(&["\\[C]Jdu domů", "% nocheck", "a \\[G]zpívám"]);
         assert!(

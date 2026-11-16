@@ -344,9 +344,12 @@ Corrections have no readability score: their `score` is 0 and their
 `grade` is `correction`, and their `category` is `restructure` or `typo`.
 
 **Marking a finding right.** Some findings are right as they are. A line
-`% nocheck` of its own above a line silences the findings on it, and
-`% nocheck <kind>` anywhere (`% nocheck apostrophes`) those of that kind in
-the whole song. `check --json` gives each finding the edit that adds the
+`% nocheck <kind> …` of its own above a line confirms the findings of those
+kinds on it (`% nocheck comma`, `% nocheck typo comma`), and leaves the other
+checks of that line on; a bare `% nocheck` (songs marked before 0.15.0)
+confirms all of them. Apostrophes and ties are about the whole song: their
+`% nocheck apostrophes` / `% nocheck tie` may stand anywhere. The same marks
+are read by the songbook's `checkkeys.py` and `checksongs.py`. `check --json` gives each finding the edit that adds the
 mark (`dismiss`), and `apply --dismiss ID` adds it from the command line.
 A mark inside a part goes along above the line when lines are joined.
 

@@ -954,9 +954,10 @@ chorus's words typed as something else may be made a chorus (then tidy
 reprints its copies); a line's copies differing in one word by a slip;
 apostrophes typed both ways; ~ in an English song; a chord at a line's
 end in one part and at the next line's start in the others; a comma missing
-before a Czech or Slovak clause. A line '% nocheck' above a line marks
-its findings right (apply --dismiss ID adds it), and '% nocheck KIND'
-anywhere those of a kind.
+before a Czech or Slovak clause. A line '% nocheck KIND ...' above a line
+marks its findings of those kinds right (apply --dismiss ID adds it; a bare
+'% nocheck' marks all of them); for apostrophes and ties, which are about the
+whole song, the mark may stand anywhere.
 apply makes the chosen ones, from any of the three; apply one, then ask
 again.";
 
@@ -1736,7 +1737,7 @@ mod tests {
                 "score": 0,
                 "grade": "correction",
                 "category": "typo",
-                "dismiss": {"start": 48, "end": 48, "replacement": "    % nocheck\n"},
+                "dismiss": {"start": 48, "end": 48, "replacement": "    % nocheck comma\n"},
                 "sources": [],
                 "edits": [{"start": 60, "end": 60, "replacement": ","}],
             }])
