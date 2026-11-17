@@ -25,7 +25,14 @@ pub struct Change {
 /// changes nothing. The changes are reported in the order they were made.
 /// A move stays on its line, so the line numbers hold for both rounds.
 pub fn tidy(text: &str) -> (String, Vec<Change>) {
-    // Spaces first: no rule after makes a run of them, and none of them
+    // Blank lines before anything else, since they are the one whitespace
+    // rule that takes lines out: every change after is reported on the
+    // song's lines through `text_before`.
+    let blanks = doubled_blank_lines(text);
+    let unblanked = apply(text, &blanks);
+    let text = unblanked.as_str();
+
+    // Spaces next: no rule after makes a run of them, and none of them
     // takes or adds a line, so the lines need no mapping back.
     let mut spaces = collapse_spaces(text);
     let spaced = apply(text, &spaces);
@@ -99,8 +106,42 @@ pub fn tidy(text: &str) -> (String, Vec<Change>) {
             .any(|c| c.line == setup.line && c.replacement.starts_with("\\insertchorus"))
     }));
     changes.extend(later);
+    {
+        let original = text_before(&blanks);
+        for change in &mut changes {
+            change.line = original(change.line);
+        }
+    }
+    changes.extend(blanks);
     changes.sort_by_key(|c| c.line);
     (tidied, changes)
+}
+
+/// A blank line after a blank line goes. TeX reads a blank line as the end
+/// of a paragraph, and a paragraph that ends twice ends once, so the song
+/// prints the same (songbook songs typeset with and without them gave
+/// identical pages). A line holding a comment is not blank and stays.
+///
+/// Each removal is reported on the blank line above it.
+fn doubled_blank_lines(text: &str) -> Vec<Change> {
+    let mut changes = Vec::new();
+    let mut at = 0;
+    let mut after_blank = false;
+    for (index, raw) in text.split_inclusive('\n').enumerate() {
+        let blank = raw.trim().is_empty();
+        if blank && after_blank {
+            changes.push(Change {
+                span: at..at + raw.len(),
+                replacement: String::new(),
+                line: index,
+                description: "a second blank line in a row removed".into(),
+                removed_lines: 1,
+            });
+        }
+        after_blank = blank;
+        at += raw.len();
+    }
+    changes
 }
 
 /// Each line's indentation as the songbook's `latexindent -l latexindent.yaml`
@@ -1694,6 +1735,33 @@ mod tests {
         let (twice, more) = tidy(&once);
         assert!(more.is_empty());
         assert_eq!(once, twice);
+    }
+
+    #[test]
+    fn blank_lines_in_a_row_become_one() {
+        let text = "\\beginsong{T}[\n    lang={english},\n]\n\n\n\n\\beginverse\n    \\[G]Paper boats\n\n  \n    on the \\[C]pond\n\\endverse\n% a comment\n\n%\n\n\n\\endsong\n";
+        let (tidied, changes) = tidy(text);
+        assert_eq!(
+            tidied,
+            "\\beginsong{T}[\n    lang={english},\n]\n\n\\beginverse\n    \\[G]Paper boats\n\n    on the \\[C]pond\n\\endverse\n% a comment\n\n%\n\n\\endsong\n"
+        );
+        let lines: Vec<usize> = changes.iter().map(|c| c.line).collect();
+        assert_eq!(lines, [4, 5, 9, 16]);
+        let (twice, more) = tidy(&tidied);
+        assert!(more.is_empty());
+        assert_eq!(tidied, twice);
+    }
+
+    #[test]
+    fn changes_after_blank_lines_are_reported_on_the_lines_of_the_song_as_given() {
+        let text = "\\beginsong{T}[\n    lang={english},\n]\n\n\n\n\\beginverse\n    Paper wo\\[G]rld\n\\endverse\n\\endsong\n";
+        let (tidied, changes) = tidy(text);
+        assert!(tidied.contains("    Paper \\[G]world\n"));
+        let moved = changes
+            .iter()
+            .find(|c| c.description.contains("syllable"))
+            .unwrap();
+        assert_eq!(moved.line, 8);
     }
 
     fn verse_song(lang: &str, line: &str) -> String {

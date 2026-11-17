@@ -139,6 +139,11 @@ part of the identical-output check `\insertchorus` has.
          but for one `latexindent` slip (Zlaté údolí's "(Harmonika)" inside
          `\iflargepaper`). It re-indents 14 songbook songs, hand-edited
          or never formatted.
+   - [x] Blank lines in a row become one (the user's suggestion). A
+         blank line ends a paragraph, and two end it once: four songbook
+         songs typeset with and without their runs gave identical pages.
+         It runs first, as the one whitespace rule that takes lines out,
+         and every later change is reported on the song's own lines.
    - [x] Idempotent: moves first, then choruses on the moved text; a second
          pass over every tidied songbook song changes nothing.
 5. [x] **Tier 3 `shrink` (until 0.6.0 `suggest`)/`apply`** (`src/tex/fit.rs`, `src/tex/measure.rs`):

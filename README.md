@@ -46,6 +46,11 @@ it, so it is never left half written.
   them that way already. Indentation, comments (which may hold text lined
   up by hand) and the space of a control space `\ ` are kept. On the
   songbook: 152 lines in 49 songs, all typeset pixel for pixel the same.
+- **Blank lines in a row become one.** A paragraph that ends twice ends
+  once, so the song prints the same. A line holding a comment is not
+  blank and stays. On the songbook: 33 runs in 26 songs (between parts, at
+  the top of an instrumental, before `\endsong`); the ones typeset to
+  compare gave identical pages.
 - **Indentation as the songbook's `latexindent` sets it**, which an editor
   easily breaks: four spaces a level, the prelude's keys one level in, a
   part's lines one level inside `\begin…`/`\end…`, the lines inside
