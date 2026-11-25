@@ -25,10 +25,10 @@ pub struct Change {
 /// changes nothing. The changes are reported in the order they were made.
 /// A move stays on its line, so the line numbers hold for both rounds.
 pub fn tidy(text: &str) -> (String, Vec<Change>) {
-    // Blank lines before anything else, since they are the one whitespace
-    // rule that takes lines out: every change after is reported on the
-    // song's lines through `text_before`.
-    let blanks = doubled_blank_lines(text);
+    // Blank lines before anything else, since they are the whitespace
+    // rules that take lines out or put them in: every change after is
+    // reported on the song's lines through `original_line`.
+    let (blanks, original_line) = blank_lines(text);
     let unblanked = apply(text, &blanks);
     let text = unblanked.as_str();
 
@@ -57,6 +57,14 @@ pub fn tidy(text: &str) -> (String, Vec<Change>) {
     let indented = apply(text, &indents);
     let text = indented.as_str();
     spaces.extend(indents);
+
+    // The prelude's keys in the songbook's order. It only swaps whole lines
+    // of the prelude, and every rule after works in the parts, so no line
+    // a later change is reported on moves.
+    let ordered = prelude_order(text);
+    let in_order = apply(text, &ordered);
+    let text = in_order.as_str();
+    spaces.extend(ordered);
 
     // Setup switches go onto the opening line next, so every rule after
     // finds them in one place.
@@ -106,42 +114,231 @@ pub fn tidy(text: &str) -> (String, Vec<Change>) {
             .any(|c| c.line == setup.line && c.replacement.starts_with("\\insertchorus"))
     }));
     changes.extend(later);
-    {
-        let original = text_before(&blanks);
-        for change in &mut changes {
-            change.line = original(change.line);
-        }
+    for change in &mut changes {
+        change.line = original_line[change.line - 1];
     }
     changes.extend(blanks);
     changes.sort_by_key(|c| c.line);
     (tidied, changes)
 }
 
-/// A blank line after a blank line goes. TeX reads a blank line as the end
-/// of a paragraph, and a paragraph that ends twice ends once, so the song
-/// prints the same (songbook songs typeset with and without them gave
-/// identical pages). A line holding a comment is not blank and stays.
+/// Blank lines as the songbook sets them: one between two parts and none
+/// inside a part. TeX reads a blank line as the end of a paragraph, and
+/// between parts, or between the lines of a part, a paragraph has ended
+/// already, so none of this changes the page (songbook songs typeset with
+/// and without them, on A4 and A5, gave identical pages):
 ///
-/// Each removal is reported on the blank line above it.
-fn doubled_blank_lines(text: &str) -> Vec<Change> {
+/// - a blank line after a blank line goes;
+/// - a blank line inside a part (`\beginverse` … `\endverse`) goes, the
+///   one right after its opening line too;
+/// - two parts, or a part and an `\insertchorus`, on lines one right after
+///   the other get a blank line between them.
+///
+/// A line holding a comment is not blank and stays. What stands between two
+/// parts other than blank lines (`\fi`, `\textnote`, a comment) is left
+/// alone: the parts do not touch.
+///
+/// Besides the changes, it gives the line each line of the result was on
+/// in `text` (an added blank line counts as the line above it), for the
+/// rules after it to report on the song's own lines.
+fn blank_lines(text: &str) -> (Vec<Change>, Vec<usize>) {
+    let scan = scan(text);
+    let inside = |at: usize| scan.parts.iter().any(|p| p.body.contains(&at));
+    // The lines a part or a chorus repeat starts on, and the ones it ends on,
+    // by the byte offset of the line.
+    let mut opens = Vec::new();
+    let mut closes = Vec::new();
+    let line_start = |at: usize| text[..at].rfind('\n').map_or(0, |n| n + 1);
+    for part in &scan.parts {
+        opens.push(line_start(part.span.start));
+        closes.push(line_start(part.span.end - 1));
+    }
+    for (span, _) in &scan.chorus_repeats {
+        if !scan.parts.iter().any(|p| p.span.contains(&span.start)) {
+            opens.push(line_start(span.start));
+            closes.push(line_start(span.start));
+        }
+    }
+
     let mut changes = Vec::new();
+    let mut original = Vec::new();
     let mut at = 0;
     let mut after_blank = false;
+    let mut after_close = false;
     for (index, raw) in text.split_inclusive('\n').enumerate() {
         let blank = raw.trim().is_empty();
-        if blank && after_blank {
-            changes.push(Change {
-                span: at..at + raw.len(),
-                replacement: String::new(),
-                line: index,
-                description: "a second blank line in a row removed".into(),
-                removed_lines: 1,
-            });
+        let removal = |description: &str| Change {
+            span: at..at + raw.len(),
+            replacement: String::new(),
+            line: index + 1,
+            description: description.into(),
+            removed_lines: 1,
+        };
+        if blank && inside(at) {
+            changes.push(removal("a blank line inside a part removed"));
+        } else if blank && after_blank {
+            // Reported on the blank line above it.
+            let mut change = removal("a second blank line in a row removed");
+            change.line = index;
+            changes.push(change);
+        } else {
+            if after_close && opens.contains(&at) {
+                changes.push(Change {
+                    span: at..at,
+                    replacement: "\n".into(),
+                    line: index,
+                    description: "a blank line put between two parts".into(),
+                    removed_lines: 0,
+                });
+                original.push(index);
+            }
+            original.push(index + 1);
+            after_blank = blank;
         }
-        after_blank = blank;
+        // A blank line removed inside a part leaves the part going on.
+        if !(blank && inside(at)) {
+            after_close = closes.contains(&at);
+        }
         at += raw.len();
     }
-    changes
+    (changes, original)
+}
+
+/// The prelude's keys in the songbook's order (`super::prelude_rank`):
+/// what the large book prints first, in the order it prints it, then the
+/// keys that print nothing, and `chr` last. A key is its line and, when its
+/// value runs on (`chr={`), the lines up to where it closes; a key commented
+/// out (`% cap={},`) moves like the others. Keys of the same rank, the ones
+/// the list doesn't name, keep their order. The keys are options, read by
+/// name, so the song prints the same.
+///
+/// A key without the comma after it (allowed for the last one) gets one if
+/// it no longer ends the list. A prelude holding anything else at the top
+/// level, a comment that is no key, a blank line or two keys on one line,
+/// is left as it is: nothing says which key such a line belongs to.
+fn prelude_order(text: &str) -> Vec<Change> {
+    // (start, end) of each key's lines, its name, and whether it is code.
+    let mut keys: Vec<(usize, usize, String, bool)> = Vec::new();
+    let mut at = 0;
+    let mut lines = text.split_inclusive('\n').enumerate();
+    let mut first_line = 0;
+    for (index, raw) in lines.by_ref() {
+        at += raw.len();
+        let code = code_of(raw).trim();
+        if code.starts_with("\\beginsong") {
+            if !code.ends_with('[') {
+                return Vec::new();
+            }
+            first_line = index + 2;
+            break;
+        }
+    }
+    let mut depth: i32 = 0;
+    for (_, raw) in lines {
+        let start = at;
+        at += raw.len();
+        let line = raw.trim();
+        let code = code_of(line).trim();
+        if depth > 0 {
+            // A value running on: the line belongs to the key above.
+            depth += braces(code);
+            keys.last_mut().unwrap().1 = at;
+            continue;
+        }
+        if code.starts_with(']') {
+            break;
+        }
+        let commented = code.is_empty();
+        let entry = if commented {
+            line.trim_start_matches('%').trim_start()
+        } else {
+            code
+        };
+        let Some(name) = key_name(entry) else {
+            return Vec::new();
+        };
+        if !commented {
+            if more_after_the_comma(code) {
+                return Vec::new();
+            }
+            depth = braces(code);
+        }
+        keys.push((start, at, name, !commented));
+    }
+    if keys.len() < 2 || depth != 0 {
+        return Vec::new();
+    }
+    let mut sorted = keys.clone();
+    sorted.sort_by_key(|(_, _, name, _)| super::prelude_rank(name));
+    if sorted == keys {
+        return Vec::new();
+    }
+    let last_code = sorted.iter().rposition(|k| k.3);
+    let mut replacement = String::new();
+    for (i, (start, end, _, code)) in sorted.iter().enumerate() {
+        let lines = &text[*start..*end];
+        let ends_with_comma = code_of(lines).trim_end().ends_with(',');
+        if *code && !ends_with_comma && Some(i) != last_code {
+            // The comma goes after the value, before any comment.
+            let body = lines.trim_end_matches(['\n', '\r']);
+            let value_end = code_of(body).trim_end().len();
+            replacement.push_str(&body[..value_end]);
+            replacement.push(',');
+            replacement.push_str(&body[value_end..]);
+            replacement.push_str(&lines[body.len()..]);
+        } else {
+            replacement.push_str(lines);
+        }
+    }
+    vec![Change {
+        span: keys[0].0..keys.last().unwrap().1,
+        replacement,
+        line: first_line,
+        description: "the prelude's keys put in the songbook's order".into(),
+        removed_lines: 0,
+    }]
+}
+
+/// The name of the key a prelude line sets: `cap` for `cap={2},`.
+fn key_name(entry: &str) -> Option<String> {
+    let (name, _) = entry.split_once('=')?;
+    let name = name.trim();
+    (!name.is_empty() && name.chars().all(|c| c.is_ascii_alphabetic())).then(|| name.to_string())
+}
+
+/// Whether a prelude line goes on after the comma that ends its key, with
+/// another key most likely (`tem={90}, met={3/4},`).
+fn more_after_the_comma(code: &str) -> bool {
+    let mut depth = 0;
+    let mut escaped = false;
+    for (i, c) in code.char_indices() {
+        match c {
+            _ if escaped => escaped = false,
+            '\\' => escaped = true,
+            '{' => depth += 1,
+            '}' => depth -= 1,
+            ',' if depth == 0 => return !code[i + 1..].trim().is_empty(),
+            _ => {}
+        }
+    }
+    false
+}
+
+/// How many more braces a stretch of code opens than it closes (an escaped
+/// `\{` is text).
+fn braces(code: &str) -> i32 {
+    let mut depth = 0;
+    let mut escaped = false;
+    for c in code.chars() {
+        match c {
+            _ if escaped => escaped = false,
+            '\\' => escaped = true,
+            '{' => depth += 1,
+            '}' => depth -= 1,
+            _ => {}
+        }
+    }
+    depth
 }
 
 /// Each line's indentation as the songbook's `latexindent -l latexindent.yaml`
@@ -1461,7 +1658,7 @@ mod tests {
 
     #[test]
     fn a_chord_between_two_words_gets_a_space_before_it() {
-        let text = "\\beginsong{T}[\n]\n\\beginverse\n    Tak jdu \\[E]dál a dál\\[G] a les \\[D]střídá les,\n    I re\\[Bm]turn\\[Em]\\[D] home\n    na konci\\[G] \\[D]\n    compa-\\[A]ny\n\\endverse\n\\begininstrumental\n    | \\[C]\\[] | ^\\[] |\n\\endinstrumental\n\\endsong\n";
+        let text = "\\beginsong{T}[\n]\n\\beginverse\n    Tak jdu \\[E]dál a dál\\[G] a les \\[D]střídá les,\n    I re\\[Bm]turn\\[Em]\\[D] home\n    na konci\\[G] \\[D]\n    compa-\\[A]ny\n\\endverse\n\n\\begininstrumental\n    | \\[C]\\[] | ^\\[] |\n\\endinstrumental\n\\endsong\n";
         let (out, changes) = tidy(text);
         assert!(out.contains("dál a dál \\[G] a les"), "{out}");
         assert!(out.contains("re\\[Bm]turn \\[Em]\\[D] home"), "{out}");
@@ -1516,11 +1713,11 @@ mod tests {
 
     #[test]
     fn lines_are_indented_as_latexindent_sets_them() {
-        let text = "\\beginsong{Tě}[\n  by={X},\n chr={\n\\gtab{C}{X32010}\n},\n    pap={},\n  ]\n\n      \\beginverse\\chordsoff\nŽe \\[C]tě \\[Am]mám,\n          \\enquote{a \\[G]to\n  je vše}\n   \\endverse\n\\iflargepaper\n\\begininstrumental\n| \\[C]\\[] |\n\\endinstrumental\n  \\else\n% \\beginverse\n    \\fi\n\\endsong\n";
+        let text = "\\beginsong{Tě}[\n  by={X},\n    pap={},\n chr={\n\\gtab{C}{X32010}\n},\n  ]\n\n      \\beginverse\\chordsoff\nŽe \\[C]tě \\[Am]mám,\n          \\enquote{a \\[G]to\n  je vše}\n   \\endverse\n\\iflargepaper\n\\begininstrumental\n| \\[C]\\[] |\n\\endinstrumental\n  \\else\n% \\beginverse\n    \\fi\n\\endsong\n";
         let (out, changes) = tidy(text);
         assert_eq!(
             out,
-            "\\beginsong{Tě}[\n    by={X},\n    chr={\n            \\gtab{C}{X32010}\n        },\n    pap={},\n]\n\n\\beginverse\\chordsoff\n    Že \\[C]tě \\[Am]mám,\n    \\enquote{a \\[G]to\n        je vše}\n\\endverse\n\\iflargepaper\n    \\begininstrumental\n        | \\[C]\\[] |\n    \\endinstrumental\n\\else\n    % \\beginverse\n\\fi\n\\endsong\n"
+            "\\beginsong{Tě}[\n    by={X},\n    pap={},\n    chr={\n            \\gtab{C}{X32010}\n        },\n]\n\n\\beginverse\\chordsoff\n    Že \\[C]tě \\[Am]mám,\n    \\enquote{a \\[G]to\n        je vše}\n\\endverse\n\\iflargepaper\n    \\begininstrumental\n        | \\[C]\\[] |\n    \\endinstrumental\n\\else\n    % \\beginverse\n\\fi\n\\endsong\n"
         );
         assert_eq!(changes.len(), 1);
         assert_eq!(tidy(&out).1.len(), 0);
@@ -1743,13 +1940,87 @@ mod tests {
         let (tidied, changes) = tidy(text);
         assert_eq!(
             tidied,
-            "\\beginsong{T}[\n    lang={english},\n]\n\n\\beginverse\n    \\[G]Paper boats\n\n    on the \\[C]pond\n\\endverse\n% a comment\n\n%\n\n\\endsong\n"
+            "\\beginsong{T}[\n    lang={english},\n]\n\n\\beginverse\n    \\[G]Paper boats\n    on the \\[C]pond\n\\endverse\n% a comment\n\n%\n\n\\endsong\n"
         );
         let lines: Vec<usize> = changes.iter().map(|c| c.line).collect();
-        assert_eq!(lines, [4, 5, 9, 16]);
+        assert_eq!(lines, [4, 5, 9, 10, 16]);
         let (twice, more) = tidy(&tidied);
         assert!(more.is_empty());
         assert_eq!(tidied, twice);
+    }
+
+    #[test]
+    fn a_part_holds_no_blank_lines() {
+        let text = "\\beginsong{T}[\n    lang={english},\n]\n\n\\beginverse\n\n    \\[G]Paper boats\n    % the second half\n\n    on the \\[C]pond\n\n\\endverse\n\n\\begininstrumental\n    | \\[G]\\[] |\n\n    | \\[C]\\[] |\n\\endinstrumental\n\n\\endsong\n";
+        let (tidied, changes) = tidy(text);
+        assert_eq!(
+            tidied,
+            "\\beginsong{T}[\n    lang={english},\n]\n\n\\beginverse\n    \\[G]Paper boats\n    % the second half\n    on the \\[C]pond\n\\endverse\n\n\\begininstrumental\n    | \\[G]\\[] |\n    | \\[C]\\[] |\n\\endinstrumental\n\n\\endsong\n"
+        );
+        let lines: Vec<usize> = changes.iter().map(|c| c.line).collect();
+        assert_eq!(lines, [6, 9, 11, 16]);
+        assert!(tidy(&tidied).1.is_empty());
+    }
+
+    #[test]
+    fn parts_that_touch_get_a_blank_line_between_them() {
+        let text = "\\beginsong{T}[\n    lang={english},\n]\n\n\\beginverse\n    \\[G]Paper boats\n\\endverse\n\\beginchorus\n    on the \\[C]pond\n\\endchorus\n\\insertchorus*\n\\beginverse\n    \\[G]Paper boats\n\\endverse\n\\iflargepaper\n    \\insertchorus\n\\fi\n% a note\n\\beginverse\n    \\[G]Paper boats\n\\endverse\n\n\\endsong\n";
+        let (tidied, changes) = tidy(text);
+        assert_eq!(
+            tidied,
+            "\\beginsong{T}[\n    lang={english},\n]\n\n\\beginverse\n    \\[G]Paper boats\n\\endverse\n\n\\beginchorus\n    on the \\[C]pond\n\\endchorus\n\n\\insertchorus*\n\n\\beginverse\n    \\[G]Paper boats\n\\endverse\n\\iflargepaper\n    \\insertchorus\n\\fi\n% a note\n\\beginverse\n    \\[G]Paper boats\n\\endverse\n\n\\endsong\n"
+        );
+        let lines: Vec<usize> = changes.iter().map(|c| c.line).collect();
+        assert_eq!(lines, [7, 10, 11]);
+        assert!(tidy(&tidied).1.is_empty());
+    }
+
+    #[test]
+    fn changes_after_an_added_blank_line_are_reported_on_the_lines_of_the_song_as_given() {
+        let text = "\\beginsong{T}[\n    lang={english},\n]\n\n\\beginverse\n    Paper boats\n\\endverse\n\\beginverse\n    Paper wo\\[G]rld\n\\endverse\n\n\\endsong\n";
+        let (tidied, changes) = tidy(text);
+        assert!(tidied.contains("\\endverse\n\n\\beginverse\n    Paper \\[G]world\n"));
+        let moved = changes
+            .iter()
+            .find(|c| c.description.contains("syllable"))
+            .unwrap();
+        assert_eq!(moved.line, 9);
+    }
+
+    #[test]
+    fn the_prelude_keys_come_in_the_songbooks_order() {
+        let text = "\\beginsong{T}[\n    by={X},\n    lang={english},\n    tem={90},\n    met={3/4},\n    chr={\n            \\gtab{C}{X32010}\n        },\n    tun={Standard},\n    % key={},\n    difficulty={easy},\n    cap={2},\n    src={https://example.org/a\\%20b},\n    tabber={Y},\n    pap={a4,a5}\n]\n\n\\beginverse\n    \\[C]Paper boats\n\\endverse\n\n\\endsong\n";
+        let (tidied, changes) = tidy(text);
+        assert_eq!(
+            tidied,
+            "\\beginsong{T}[\n    by={X},\n    tun={Standard},\n    tem={90},\n    met={3/4},\n    cap={2},\n    lang={english},\n    % key={},\n    src={https://example.org/a\\%20b},\n    difficulty={easy},\n    tabber={Y},\n    pap={a4,a5},\n    chr={\n            \\gtab{C}{X32010}\n        },\n]\n\n\\beginverse\n    \\[C]Paper boats\n\\endverse\n\n\\endsong\n"
+        );
+        assert_eq!(changes.len(), 1);
+        assert_eq!(changes[0].line, 2);
+        assert!(tidy(&tidied).1.is_empty());
+    }
+
+    #[test]
+    fn a_prelude_with_lines_of_no_one_key_is_left_as_it_is() {
+        for prelude in [
+            "    tem={90}, by={X},\n    pap={},\n",
+            "    tem={90},\n    % measured by hand\n    by={X},\n",
+            "    tem={90},\n\n    by={X},\n",
+        ] {
+            let text = format!("\\beginsong{{T}}[\n{prelude}]\n\n\\endsong\n");
+            assert_eq!(tidy(&text).0, text, "{prelude}");
+        }
+    }
+
+    #[test]
+    fn a_value_with_braces_inside_moves_whole() {
+        let text =
+            "\\beginsong{T}[\n    tem={90},\n    ori={A {B} \\} C},\n    by={X},\n]\n\n\\endsong\n";
+        let (tidied, _) = tidy(text);
+        assert_eq!(
+            tidied,
+            "\\beginsong{T}[\n    by={X},\n    ori={A {B} \\} C},\n    tem={90},\n]\n\n\\endsong\n"
+        );
     }
 
     #[test]

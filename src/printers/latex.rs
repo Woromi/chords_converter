@@ -9,11 +9,12 @@ impl SongPrinter for LatexPrinter {
     fn print(&self, song: &Song, writer: &mut dyn Write) -> std::io::Result<()> {
         // 1. Begin Song & Metadata Block
         writeln!(writer, "\\beginsong{{{}}}[", escape(&song.title))?;
+        // The keys in the songbook's order (`tex::prelude_rank`): what the
+        // large book prints first, in the order it prints it, then the rest.
         writeln!(writer, "    by={{{}}},", escape(&song.artist))?;
-
-        match &song.language {
-            Some(lang) => writeln!(writer, "    lang={{{}}},", escape(lang))?,
-            None => writeln!(writer, "    % lang={{czech|english}},")?,
+        match &song.tuning {
+            Some(tuning) => writeln!(writer, "    tun={{{}}},", escape(tuning))?,
+            None => writeln!(writer, "    tun={{Standard}},")?,
         }
         match &song.tempo {
             Some(tempo) => writeln!(writer, "    tem={{{}}},", escape(tempo))?,
@@ -23,20 +24,20 @@ impl SongPrinter for LatexPrinter {
             Some(meter) => writeln!(writer, "    met={{{}}},", escape(meter))?,
             None => writeln!(writer, "    % met={{}},")?,
         }
-        match &song.tuning {
-            Some(tuning) => writeln!(writer, "    tun={{{}}},", escape(tuning))?,
-            None => writeln!(writer, "    tun={{Standard}},")?,
-        }
-        match &song.key {
-            Some(key) => writeln!(writer, "    key={{{}}},", escape_key(key))?,
-            None => writeln!(writer, "    % key={{}},")?,
-        }
         // No capo, as the site said, is no key at all; a capo the site never
         // mentioned is left for a person to fill in.
         match &song.capo {
             None => writeln!(writer, "    % cap={{}},")?,
             Some(0) => {}
             Some(capo) => writeln!(writer, "    cap={{{}}},", capo)?,
+        }
+        match &song.language {
+            Some(lang) => writeln!(writer, "    lang={{{}}},", escape(lang))?,
+            None => writeln!(writer, "    % lang={{czech|english}},")?,
+        }
+        match &song.key {
+            Some(key) => writeln!(writer, "    key={{{}}},", escape_key(key))?,
+            None => writeln!(writer, "    % key={{}},")?,
         }
         writeln!(writer, "    src={{{}}},", escape(&song.source_website))?;
         // Metadata the song format has no key for is kept as a comment.
@@ -48,7 +49,8 @@ impl SongPrinter for LatexPrinter {
                 one_line(&escape(value))
             )?;
         }
-        // The papers the song fits, last as in the songbook's songs. It is
+        // The papers the song fits, last of what the printer writes (only
+        // `chr` goes after it, and a person writes that). It is
         // measured, never guessed (`checkpaper.py --measure … --write`),
         // which fills this key in. It is a key, not a comment: the script
         // would write its answer into `% pap={},` and leave it commented
@@ -806,6 +808,24 @@ mod tests {
         assert!(out.contains("    met={3/4},\n"));
         assert!(out.contains("    cap={2},\n"));
         assert!(!out.contains("\\capo"));
+    }
+
+    #[test]
+    fn the_keys_come_in_the_songbooks_order() {
+        let mut song = song(Some("3/4"), Some(2));
+        song.extra.push(("Difficulty".into(), "easy".into()));
+        let out = header(&song);
+        let keys: Vec<&str> = out
+            .lines()
+            .skip(1)
+            .take_while(|l| *l != "]")
+            .map(|l| l.trim_start_matches([' ', '%']).split('=').next().unwrap())
+            .collect();
+        let mut sorted = keys.clone();
+        sorted.sort_by_key(|k| crate::tex::prelude_rank(k));
+        assert_eq!(keys, sorted, "{out}");
+        assert_eq!(keys.first(), Some(&"by"));
+        assert_eq!(keys.last(), Some(&"pap"));
     }
 
     #[test]

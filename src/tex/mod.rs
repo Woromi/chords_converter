@@ -73,6 +73,30 @@ pub struct Scan {
     pub lang: Option<String>,
 }
 
+/// The order of the keys in a song's prelude (`\beginsong{…}[ … ]`). What
+/// the large book prints comes first, in the order it prints it: the
+/// artist beside the title, then the box at the top right from the top
+/// (`ori`, `tun`, `tem`; its chord diagrams aside), then `met` and `cap`,
+/// which print at the start of the song. Then the keys that print nothing,
+/// a key this list does not name among them, just before `pap`; and
+/// `chr` last, since its diagrams run over several lines.
+const PRELUDE_ORDER: [&str; 12] = [
+    "by", "ori", "tun", "tem", "met", "cap", "lang", "key", "tags", "src", "", "pap",
+];
+
+/// Where a prelude key goes in [`PRELUDE_ORDER`]: keys of the same rank
+/// keep the order they came in.
+pub fn prelude_rank(key: &str) -> usize {
+    let unknown = PRELUDE_ORDER.iter().position(|k| k.is_empty()).unwrap();
+    if key == "chr" {
+        return PRELUDE_ORDER.len();
+    }
+    PRELUDE_ORDER
+        .iter()
+        .position(|k| !k.is_empty() && *k == key)
+        .unwrap_or(unknown)
+}
+
 /// The bytes of a line that are not comment: everything before the first `%`
 /// no backslash escapes. (`\%` and `\[\%]` are a percent sign, not a comment.)
 pub fn code_of(line: &str) -> &str {

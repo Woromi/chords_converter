@@ -123,20 +123,27 @@ project file under `projects/`. One song per file.
 ```latex
 \beginsong{She's Always A Woman}[
     by={Billy Joel},
-    lang={english},
+    tun={Standard},
     tem={173},
     met={3/4},
-    tun={Standard},
-    key={E\flt},
     cap={3},
+    lang={english},
+    key={E\flt},
     src={https://...},
+    pap={a4,a5},
     chr={
         \gtab{F\shrp dim7}{2:(123131):123141}
     },
-    pap={a4,a5},
 ]
 ```
 
+- **The keys come in this order**: what the large book prints first, in
+  the order it prints it (`by` beside the title; `ori`, `tun`, `tem` in
+  the box at the top right; `met` and `cap` at the start of the song),
+  then what prints nothing (`lang`, `key`, `tags`, `src`, any other key,
+  `pap`), and `chr` last, since it runs over several lines. A key
+  commented out keeps its place. The printer writes this order and `tidy`
+  restores it (`prelude_rank` in `src/tex/mod.rs`).
 - **`lang`** is always set (`czech`, `slovak`, `english`, …). It picks the
   hyphenation and the chord naming: Czech and Slovak songs use **H** for B
   natural and **B** for B flat, everything else uses English names.

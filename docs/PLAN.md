@@ -142,8 +142,18 @@ part of the identical-output check `\insertchorus` has.
    - [x] Blank lines in a row become one (the user's suggestion). A
          blank line ends a paragraph, and two end it once: four songbook
          songs typeset with and without their runs gave identical pages.
-         It runs first, as the one whitespace rule that takes lines out,
-         and every later change is reported on the song's own lines.
+   - [x] No blank line inside a part, and one between two parts that
+         touch (the user). Every songbook song with such a line, typeset
+         with and without it on A4 and A5, gave identical pages. With the
+         runs above it is one stage, run first, as the whitespace rule that
+         takes lines out and puts them in; it gives the line each line came
+         from, and every later change is reported on the song's own lines.
+   - [x] The prelude's keys in one order (the user): what velkyzpevnik
+         prints first, as it prints it (`by`, `ori`, `tun`, `tem`, `met`,
+         `cap`), then the rest, `chr` last as the one over several lines.
+         The printer writes it, `tidy` sorts a song's prelude into it.
+         All 233 songbook songs move; eight typeset before and after gave
+         identical pages, and `checksongs.py`/`checkkeys.py` find the same.
    - [x] Idempotent: moves first, then choruses on the moved text; a second
          pass over every tidied songbook song changes nothing.
 5. [x] **Tier 3 `shrink` (until 0.6.0 `suggest`)/`apply`** (`src/tex/fit.rs`, `src/tex/measure.rs`):

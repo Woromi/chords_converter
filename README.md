@@ -46,11 +46,26 @@ it, so it is never left half written.
   them that way already. Indentation, comments (which may hold text lined
   up by hand) and the space of a control space `\ ` are kept. On the
   songbook: 152 lines in 49 songs, all typeset pixel for pixel the same.
-- **Blank lines in a row become one.** A paragraph that ends twice ends
-  once, so the song prints the same. A line holding a comment is not
-  blank and stays. On the songbook: 33 runs in 26 songs (between parts, at
-  the top of an instrumental, before `\endsong`); the ones typeset to
-  compare gave identical pages.
+- **Blank lines as the songbook sets them: one between parts, none inside
+  a part.** Blank lines in a row become one, a blank line inside a part
+  (right after `\beginverse` too) goes, and two parts on touching lines,
+  `\insertchorus` counted as a part, get one between them. A blank line
+  only ends a paragraph, and there it has ended already, so the song prints
+  the same. A line holding a comment is not blank and stays, and parts
+  with `\fi` or a comment between them are left as they are. On the
+  songbook: 33 runs in 26 songs, 7 blank lines inside parts (in verses,
+  instrumentals, after `\beginverse*`) and 2 places where parts touched;
+  typeset before and after, on A4 and A5, the pages are identical.
+- **The prelude's keys in the songbook's order**: what the large book
+  prints first, in the order it prints it (`by`; `ori`, `tun`, `tem` from
+  the box at the top right; `met`, `cap`), then `lang`, `key`, `tags`,
+  `src`, any other key, `pap`, and `chr` last. A key commented out
+  (`% cap={},`) and a value over several lines move whole; a key that
+  lost its place at the end gets its comma. A prelude with a line that is
+  no one key (a remark, a blank line, two keys on a line) is left alone.
+  The drafts come in this order already. Keys are read by name, so the
+  song prints the same: songs typeset before and after gave identical
+  pages, and the songbook's checks find the same.
 - **Indentation as the songbook's `latexindent` sets it**, which an editor
   easily breaks: four spaces a level, the prelude's keys one level in, a
   part's lines one level inside `\begin…`/`\end…`, the lines inside
