@@ -155,6 +155,7 @@ ones chosen:
 cargo run -- shrink Song.tex --fit a5 --measure
 cargo run -- apply Song.tex --id chordsoff@31          # then shrink again
 cargo run -- join Song.tex                             # lines joined in pairs, checked
+cargo run -- shrink Song.tex --apply --fit a5          # all of it, until it fits
 ```
 
 ```
@@ -293,6 +294,36 @@ Song.tex
   root, which still works), or the package `--package DIR` names (since
   0.14.0). Once a song fits, record it with
   `zubuvzpevnik/scripts/checkpaper.py --measure a5 --write <song>` there.
+- **`--apply`: until it fits.** `shrink --apply` does what a person
+  following the listing does: it takes the first proposal, tidies the
+  song, measures it again with `checkpaper.py`, and goes on until the song
+  fits the paper `--fit` names (A5 unless given). Fitting A5 means fitting
+  A4 too, so while A4 overflows the changes for every paper come first, as
+  the listing has them. A change that lengthens lines (joined lines, the
+  second voice inline) is taken only once typesetting shows no line too
+  wide, which `shrink` alone leaves to `join`. Every step is measured,
+  since a measurement tells the pages, not by how much a song overflows:
+  a few seconds a step.
+  - It stops before a **last resort** (a smaller type, or a part left
+    without chords and no neighbour of its kind with them) and names it;
+    `--last-resort` lets it go on, the hidden chords first (30), the
+    smaller type after (20), as the song spec orders the levers.
+  - Once the song fits, each change but the last is tried **left out**,
+    the song made again without it: one a later change made unnecessary
+    goes, but only when the changes after it read as well, so chords
+    hidden are never given back for a smaller type that would fit alone.
+  - **All or nothing**: a song it cannot fit is left as it was, and the
+    changes it tried are listed as `tried, not made:`. Chords hidden
+    without the song fitting cost the reader and buy nothing.
+  - Each change is listed on stderr as `<file>:<line>: <description>`,
+    the line where it was made. The song is rewritten in place unless
+    `-o FILE` or `-o -` says otherwise. `--json` prints `fits`, `stopped`
+    (`fits`, `nothing_left`, `last_resort`), the `last_resort` held back,
+    the `steps` and the pages `measured` last.
+  - A part that hides its last lines with a switch inside can still be
+    hidden whole later, the switch inside going. Without that, following
+    the ranking step by step could lead into a corner where only the
+    smaller type was left.
 - **Descriptions name the parts** as a person counts them: "verse 3" as the
   page numbers it, "the 2nd chorus" (a reprint with `\insertchorus` counts
   as sung again), "the 1st chorus R2" for a numbered one, and a part type a

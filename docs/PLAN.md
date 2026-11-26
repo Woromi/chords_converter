@@ -186,6 +186,17 @@ part of the identical-output check `\insertchorus` has.
          stops. Forever And One gets the two `\insertchorus*` the hand edit
          chose. Africa runs out of proposals at 2 A4 pages: what the hand
          edit did there (joined lines, transposition) is not a lever here.
+   - [x] `shrink --apply` (0.16.0, the user's idea): the first proposal
+         taken, the song tidied and measured again, until it fits the
+         `--fit` paper (A5 by default). Stops before a last resort unless
+         `--last-resort`; a song it cannot fit is left as it was. Once it
+         fits, a change a later one as readable made unnecessary is left
+         out (the song made again without it, the changes found by kind
+         and part). Checked on eight songbook songs with their hand-placed
+         `\chordsoffonsmallpage` taken out. It showed a corner: a part
+         hiding its last lines inside could not be hidden whole any more,
+         so only the smaller type was left; now it can, the
+         switch inside going when the new one covers it.
    - [x] Rated for readability (0.3.0, decided with the user 2026-11-08):
          a score and a grade per proposal, listed by score within a stage.
          A chorus reminder (80) reads better than chords off (70), which

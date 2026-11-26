@@ -218,6 +218,18 @@ impl Chords {
     }
 }
 
+/// A switch on a line of its own inside a part, hiding the chords of the
+/// lines after it.
+#[derive(Debug, Clone)]
+struct InsideSwitch {
+    /// What it hides them on.
+    switch: Chords,
+    /// The bytes of its line, line break included.
+    line: Range<usize>,
+    /// The part's rows with chords before it, which stay shown.
+    chorded_before: usize,
+}
+
 /// What the generators need to know about one part.
 struct PartInfo<'a> {
     part: &'a PartSpan,
@@ -228,6 +240,9 @@ struct PartInfo<'a> {
     chords: Option<Vec<String>>,
     /// Whether it hides its chords inside, on a line of its own.
     mid_switch: bool,
+    /// That switch, when it is the part's one and the lines after it repeat
+    /// the chords before it (or have none).
+    inside: Option<InsideSwitch>,
     switch: Chords,
     /// Lines it prints, chord rows aside.
     lyric_rows: usize,
@@ -277,7 +292,25 @@ fn info<'a>(text: &str, part: &'a PartSpan) -> PartInfo<'a> {
     // chords of those before (or have none): every chord can still be read.
     let (rows, switches) = inside::rows(text, part.body.clone());
     let mid_switch = !switches.is_empty();
+    let mut inside = None;
     if let [at] = switches[..] {
+        let mut start = part.body.start;
+        for raw in text[part.body.clone()].split_inclusive('\n') {
+            let code = code_of(raw.trim_end_matches(['\n', '\r'])).trim();
+            if inside::is_switch(code) {
+                inside = Some(InsideSwitch {
+                    switch: if has_word(code, "chordsoff") {
+                        Chords::Off
+                    } else {
+                        Chords::OffOnSmallPage
+                    },
+                    line: start..start + raw.len(),
+                    chorded_before: rows[..at].iter().filter(|r| !r.chords.is_empty()).count(),
+                });
+                break;
+            }
+            start += raw.len();
+        }
         let conditional = text[part.body.clone()].lines().any(|l| {
             ["\\if", "\\else", "\\fi"]
                 .iter()
@@ -295,10 +328,24 @@ fn info<'a>(text: &str, part: &'a PartSpan) -> PartInfo<'a> {
         part,
         chords: (!replayed).then_some(chords),
         mid_switch,
+        inside: inside.filter(|_| !replayed),
         switch,
         lyric_rows,
         chorded_rows,
         words,
+    }
+}
+
+impl PartInfo<'_> {
+    /// The rows that show chords on a paper when the part's own switch is
+    /// `state`: none when it hides them there, those before the switch
+    /// inside when that one hides the rest there, all of them otherwise.
+    fn chorded_shown(&self, state: Chords, paper: Stage) -> usize {
+        match &self.inside {
+            _ if state.plain_on(paper) => 0,
+            Some(inside) if inside.switch.plain_on(paper) => inside.chorded_before,
+            _ => self.chorded_rows,
+        }
     }
 }
 
@@ -466,7 +513,7 @@ fn chords_off_of_kind(
         .copied()
         .filter(|&j| {
             infos[j].chords.as_ref().is_some_and(|c| !c.is_empty())
-                && !infos[j].mid_switch
+                && (!infos[j].mid_switch || infos[j].inside.is_some())
                 && (stage == Stage::AllPapers || infos[j].switch != Chords::Off)
         })
         .collect();
@@ -506,8 +553,9 @@ fn chords_off_of_kind(
     // fitting the page would make small paper longer.
     let hidden_small = |mask: u32| -> usize {
         kin.iter()
-            .filter(|&&j| state_in(mask, j).plain_on(Stage::SmallPaper))
-            .map(|&j| infos[j].chorded_rows)
+            .map(|&j| {
+                infos[j].chorded_rows - infos[j].chorded_shown(state_in(mask, j), Stage::SmallPaper)
+            })
             .sum()
     };
 
@@ -641,21 +689,33 @@ fn chords_off_of_kind(
                 .saturating_sub(PER_LINE_AWAY as usize * further)
                 .max(POOR as usize) as u8
         };
-        let gain = hidden
+        // The chord rows it takes off the paper, less those it brings
+        // back: a part hiding its last lines inside already gives only
+        // its first ones.
+        let shown_on = |j: usize, state: Chords| infos[j].chorded_shown(state, stage);
+        let gain = layout
+            .changes
             .iter()
-            .map(|&j| infos[j].chorded_rows)
-            .sum::<usize>()
-            .saturating_sub(
-                shown
-                    .iter()
-                    .map(|(j, _)| infos[*j].chorded_rows)
-                    .sum::<usize>(),
-            );
-        let edits = layout
+            .map(|&(j, to)| shown_on(j, infos[j].switch) as isize - shown_on(j, to) as isize)
+            .sum::<isize>()
+            .max(0) as usize;
+        let mut edits: Vec<Edit> = layout
             .changes
             .iter()
             .map(|&(j, to)| switch_edit(text, infos[j].part, infos[j].switch, to))
             .collect();
+        // A switch inside that hides no more than the part's own now does
+        // goes: on large paper as well as small, or small alone for both.
+        for &(j, to) in &layout.changes {
+            if let Some(inside) = &infos[j].inside
+                && (to == Chords::Off || to == inside.switch)
+            {
+                edits.push(Edit {
+                    span: inside.line.clone(),
+                    replacement: String::new(),
+                });
+            }
+        }
         let mut sources: Vec<usize> = hidden
             .iter()
             .filter_map(|&j| nearest(layout.mask, j, stage))
@@ -3269,6 +3329,55 @@ mod tests {
             .collect();
         assert_eq!(both.len(), 2);
         assert!(apply(&text, &both).is_err());
+    }
+
+    #[test]
+    fn a_part_hiding_its_last_lines_can_still_hide_them_all() {
+        // Verse 2 hides its repeated lines on small paper already. Hiding
+        // the whole verse (it repeats verse 1) is still offered, or the
+        // first step would lead into a corner where only a smaller type is
+        // left.
+        let half = [
+            TWICE[0],
+            TWICE[1],
+            "\\chordsoffonsmallpage",
+            TWICE[2],
+            TWICE[3],
+        ];
+        let text = song(&[part("\\beginverse", &TWICE), part("\\beginverse", &half)].concat());
+        let all = proposals(&text);
+        let small = all
+            .iter()
+            .find(|p| p.kind == "chordsoffonsmallpage")
+            .expect("the whole verse offered");
+        // Small paper shows two of its chord rows still, A4 all four.
+        assert_eq!(small.gain_lines, 2);
+        let every = all
+            .iter()
+            .find(|p| p.kind == "chordsoff")
+            .expect("on every paper too");
+        assert_eq!(every.gain_lines, 4);
+        // The switch goes on the opening line, and the one inside, hiding
+        // no more, goes.
+        let out = apply(&text, &[small]).unwrap();
+        assert!(
+            out.contains("\\beginverse\\chordsoffonsmallpage\n"),
+            "{out}"
+        );
+        assert_eq!(out.matches("\\chordsoffonsmallpage").count(), 1, "{out}");
+        let out = apply(&text, &[every]).unwrap();
+        assert!(out.contains("\\beginverse\\chordsoff\n"), "{out}");
+        assert!(!out.contains("\\chordsoffonsmallpage"), "{out}");
+        // Hidden on large paper inside, the lines stay hidden there when
+        // the verse goes off on small paper alone.
+        let off = text.replace("    \\chordsoffonsmallpage\n", "    \\chordsoff\n");
+        let all = proposals(&off);
+        let small = all
+            .iter()
+            .find(|p| p.kind == "chordsoffonsmallpage")
+            .expect("offered");
+        let out = apply(&off, &[small]).unwrap();
+        assert!(out.contains("    \\chordsoff\n"), "{out}");
     }
 
     /// Four lines going G C, D G twice: the last two repeat the first two.

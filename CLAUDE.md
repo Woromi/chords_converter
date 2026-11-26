@@ -38,15 +38,15 @@ keeps its wording unless the version goes up with it:
   `Failed to create file`, `Failed to write to file`,
   `Warning: no song found on`, `Warning: no song data found on`; and the
   lines it shows the user (`Warning: …`) or drops (`Retrying (…`);
-- the `<file>:<line>: <description>` lines `tidy` and `apply` report
-  each change with;
+- the `<file>:<line>: <description>` lines `tidy`, `apply` and
+  `shrink --apply` report each change with;
 - the first line of `--version`, `chords_converter X.Y.Z`;
 - the default output path `out/latex/<Artist>/<Title>.tex`, and that a
   page with no song on it gives `UnknownArtist/UnknownTitle`;
 - that `tidy -o -` and `apply -o -` print a whole song, `\endsong` included;
-- the `--json` shape, pinned by `the_json_listing_keeps_its_shape` in
-  `main.rs`: a change there fails the test, which is the reminder to
-  bump.
+- the `--json` shapes, pinned by `the_json_listing_keeps_its_shape` and
+  `the_fit_json_keeps_its_shape` in `main.rs`: a change there fails the
+  test, which is the reminder to bump.
 
 `out/` and `target/` are gitignored. `README.md` is the user-facing manual
 (sites, text input format, bot checks). Keep it in step with the code.
@@ -299,7 +299,9 @@ songbook shows all of it):
 - lines are as short as the site split them, not joined into whole phrases;
 - repeated choruses are printed in full (`--tidy` makes an identical one
   `\insertchorus`), and repeated verses keep their chords. `\insertchorus*`
-  and `\chordsoff` are a person's decision, which `shrink` proposes;
+  and `\chordsoff` are a person's decision, which `shrink` proposes
+  (`shrink --apply` takes them one by one until the song fits, for a
+  person to review);
 - without `--tidy`, chords sit where the site put them, often a letter inside
   the syllable (`D\[E]o` for `\[E]Do`);
 - `met`, `cap`, `key` are left commented out when the site did not give them,

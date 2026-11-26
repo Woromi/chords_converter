@@ -564,7 +564,12 @@ fn list_proposals(
         not_joined = tex::fit::unjoinable(&text);
         for p in all.iter().filter(|p| p.kind == "joinlines") {
             let kind = p.joined_kind().unwrap_or("part");
-            match too_wide(&text, songbook, package, &measured, p)? {
+            match too_wide(
+                &text,
+                &mut |t: &str, papers: &[&str]| tex::measure::measure(songbook, package, t, papers),
+                &measured,
+                p,
+            )? {
                 None => shown.push(p),
                 Some(why) => not_joined.push(format!("{kind}: {why}")),
             }
@@ -591,7 +596,16 @@ fn list_proposals(
                 measure_on(paper)?;
             }
             for p in lengthening {
-                if too_wide(&text, songbook, package, &measured, p)?.is_none() {
+                if too_wide(
+                    &text,
+                    &mut |t: &str, papers: &[&str]| {
+                        tex::measure::measure(songbook, package, t, papers)
+                    },
+                    &measured,
+                    p,
+                )?
+                .is_none()
+                {
                     shown.push(p);
                 }
             }
@@ -777,6 +791,12 @@ fn json_listing(
     })
 }
 
+/// Typesets a song on the papers named and says what each made of it:
+/// `tex::measure::measure` with the songbook and package bound, or, in a
+/// test, a stand-in that counts lines.
+type Measurer<'a> =
+    dyn FnMut(&str, &[&str]) -> Result<BTreeMap<String, tex::measure::Measured>, String> + 'a;
+
 /// Whether a change that lengthens lines makes the song worse on the
 /// papers it lengthens them on (`checked_papers`, each already in
 /// `measured`): a line it lengthens too wide already, or typeset with it,
@@ -784,8 +804,7 @@ fn json_listing(
 /// why, in words.
 fn too_wide(
     text: &str,
-    songbook: &Path,
-    package: Option<&Path>,
+    measure: &mut Measurer,
     measured: &BTreeMap<String, tex::measure::Measured>,
     p: &tex::fit::Proposal,
 ) -> Result<Option<String>, String> {
@@ -808,7 +827,7 @@ fn too_wide(
         )));
     }
     let changed = tex::fit::apply(text, &[p])?;
-    let after = tex::measure::measure(songbook, package, &changed, papers)?;
+    let after = measure(&changed, papers)?;
     // The papers a lengthened line is too wide for, and those it takes
     // more pages on.
     let (mut wide, mut longer) = (Vec::new(), Vec::new());
@@ -839,6 +858,349 @@ fn too_wide(
         ));
     }
     Ok((!worse.is_empty()).then(|| format!("joined, {}", worse.join(", and "))))
+}
+
+/// One change `shrink --apply` made: the proposal as it was listed when it
+/// was taken.
+#[derive(Debug, Clone, PartialEq)]
+struct Step {
+    id: String,
+    kind: &'static str,
+    /// The line it was on in the song as it stood when it was made.
+    line: usize,
+    description: String,
+    score: u8,
+    grade: &'static str,
+    /// The part it acts on, by its kind and its number among the parts of
+    /// that kind, which is how it is found again (`replay`).
+    part: Option<(String, usize)>,
+}
+
+impl Step {
+    fn of(p: &tex::fit::Proposal, text: &str) -> Step {
+        Step {
+            id: p.id.clone(),
+            kind: p.kind,
+            line: p.line,
+            part: part_of(text, p.line),
+            description: p.description.clone(),
+            score: p.score,
+            grade: p.grade(),
+        }
+    }
+}
+
+/// The part a line of the song is in: its kind and its number among the
+/// parts of that kind, from 0. `None` outside every part (the prelude).
+fn part_of(text: &str, line: usize) -> Option<(String, usize)> {
+    let parts = tex::scan(text).parts;
+    let last_line = |span: &std::ops::Range<usize>| part_line(text, span.end);
+    let at = parts
+        .iter()
+        .position(|p| p.line <= line && line <= last_line(&p.span))?;
+    let kind = parts[at].kind.clone();
+    let number = parts[..at].iter().filter(|p| p.kind == kind).count();
+    Some((kind, number))
+}
+
+/// The 1-based line a byte of the song is on.
+fn part_line(text: &str, at: usize) -> usize {
+    text[..at].matches('\n').count() + 1
+}
+
+/// Why `shrink --apply` stopped.
+#[derive(Debug, Clone, PartialEq)]
+enum Stopped {
+    /// The song fits the paper.
+    Fits,
+    /// No change is left that helps.
+    NothingLeft,
+    /// Only a last resort is left (a smaller type, chords on the first part
+    /// of a kind alone), and `--last-resort` did not allow it: this one.
+    LastResort(Step),
+}
+
+impl Stopped {
+    fn name(&self) -> &'static str {
+        match self {
+            Stopped::Fits => "fits",
+            Stopped::NothingLeft => "nothing_left",
+            Stopped::LastResort(_) => "last_resort",
+        }
+    }
+}
+
+/// What `shrink --apply` made of a song.
+struct Fitted {
+    text: String,
+    steps: Vec<Step>,
+    stopped: Stopped,
+    /// The song as it ends, measured on the papers looked at.
+    measured: BTreeMap<String, tex::measure::Measured>,
+}
+
+/// A song needs fewer changes than this, by far; the limit only keeps a
+/// change that undoes itself from going round for ever.
+const MAX_STEPS: usize = 40;
+
+/// Where a song stands against the paper it is fitted to: whether it fits,
+/// and if not, the stages whose changes help, as `shrink --fit` lists them.
+/// A5 is helped by the changes for every paper first while A4 overflows (A5
+/// overflows then too), then by those for small paper.
+fn fit_state(
+    text: &str,
+    paper: &str,
+    measure: &mut Measurer,
+    measured: &mut BTreeMap<String, tex::measure::Measured>,
+) -> Result<Option<Vec<tex::fit::Stage>>, String> {
+    use tex::fit::Stage;
+    let mut on = |paper: &str| -> Result<tex::measure::Measured, String> {
+        if let Some(m) = measured.get(paper) {
+            return Ok(m.clone());
+        }
+        let m = measure(text, &[paper])?
+            .remove(paper)
+            .ok_or_else(|| format!("No measurement for {}", paper))?;
+        measured.insert(paper.to_string(), m.clone());
+        Ok(m)
+    };
+    if !on("a4")?.fits(1) {
+        return Ok(Some(if paper == "a4" {
+            vec![Stage::AllPapers]
+        } else {
+            vec![Stage::AllPapers, Stage::SmallPaper]
+        }));
+    }
+    if paper == "a4" || on("a5")?.fits(pages_allowed(text, "a5")) {
+        return Ok(None);
+    }
+    Ok(Some(vec![Stage::SmallPaper]))
+}
+
+/// Fits a song to a paper the way a person following `shrink` would: the
+/// first proposal taken, the song tidied and measured again, until it fits.
+/// The proposals are ranked so that taking the first each time never leads
+/// into a corner (`tex::fit`), and every step is measured, since the
+/// measurement says how many pages, not by how much the song overflows.
+///
+/// A change that lengthens lines (the second voice inline, joined lines) is
+/// taken only once typesetting it shows no line too wide. A last resort is
+/// taken only when `last_resort` allows; otherwise the fitting stops before
+/// it and says which, as the song spec leaves that to a person.
+///
+/// Once the song fits, each change but the last is tried left out, latest
+/// first: the song made again from the start without it, by the same
+/// changes found afresh. One a later change made unnecessary goes, so the
+/// song keeps as much of itself as the paper allows, but only when the
+/// changes after it read as well (score as high or higher): a chorus
+/// reminder is not given back for a smaller type that would fit alone.
+fn shrink_to_fit(
+    original: &str,
+    paper: &str,
+    last_resort: bool,
+    measure: &mut Measurer,
+) -> Result<Fitted, String> {
+    let mut text = original.to_string();
+    let mut steps = Vec::new();
+    let mut measured = BTreeMap::new();
+    let stopped = loop {
+        measured.clear();
+        let Some(stages) = fit_state(&text, paper, measure, &mut measured)? else {
+            break Stopped::Fits;
+        };
+        if steps.len() >= MAX_STEPS {
+            break Stopped::NothingLeft;
+        }
+        let all = tex::fit::proposals(&text);
+        let mut held_back = None;
+        let mut chosen = None;
+        for p in all
+            .iter()
+            .filter(|p| !p.is_correction() && stages.contains(&p.stage))
+        {
+            if p.grade() == "last resort" && !last_resort {
+                held_back.get_or_insert_with(|| Step::of(p, &text));
+                continue;
+            }
+            if p.needs_width_check() {
+                for paper in p.checked_papers() {
+                    if !measured.contains_key(*paper) {
+                        let m = measure(&text, &[paper])?;
+                        measured.extend(m);
+                    }
+                }
+                if too_wide(&text, measure, &measured, p)?.is_some() {
+                    continue;
+                }
+            }
+            chosen = Some(p);
+            break;
+        }
+        let Some(p) = chosen else {
+            break held_back.map_or(Stopped::NothingLeft, Stopped::LastResort);
+        };
+        steps.push(Step::of(p, &text));
+        text = tex::tidy::tidy(&tex::fit::apply(&text, &[p])?).0;
+    };
+
+    if stopped == Stopped::Fits && steps.len() > 1 {
+        for left_out in (0..steps.len() - 1).rev() {
+            // Never a change traded for a less readable one: the smaller
+            // type alone may fit, but the chords hidden before it read
+            // better.
+            if steps[left_out + 1..]
+                .iter()
+                .any(|later| later.score < steps[left_out].score)
+            {
+                continue;
+            }
+            let mut fewer = steps.clone();
+            fewer.remove(left_out);
+            let Some((again, made)) = replay(original, &fewer)? else {
+                continue;
+            };
+            let mut m = BTreeMap::new();
+            if fit_state(&again, paper, measure, &mut m)?.is_none() {
+                steps = made;
+                text = again;
+                measured = m;
+            }
+        }
+    }
+    Ok(Fitted {
+        text,
+        steps,
+        stopped,
+        measured,
+    })
+}
+
+/// The song made again from `original` by these changes, each found afresh
+/// by its kind and the part it acts on (its lines and its wording move when
+/// a change before it is left out, the part does not), and the steps as
+/// they were made. `None` when one is not offered
+/// any more without the change left out.
+fn replay(original: &str, steps: &[Step]) -> Result<Option<(String, Vec<Step>)>, String> {
+    let mut text = original.to_string();
+    let mut made = Vec::new();
+    for step in steps {
+        let all = tex::fit::proposals(&text);
+        let Some(p) = all
+            .iter()
+            .find(|p| p.kind == step.kind && part_of(&text, p.line) == step.part)
+        else {
+            return Ok(None);
+        };
+        made.push(Step::of(p, &text));
+        text = tex::tidy::tidy(&tex::fit::apply(&text, &[p])?).0;
+    }
+    Ok(Some((text, made)))
+}
+
+/// What `shrink --apply --json` prints. Its shape is part of the interface
+/// like the listing's (`the_fit_json_keeps_its_shape` pins it): `fits`,
+/// `stopped` (`fits`, `nothing_left`, `last_resort`), the last resort held
+/// back, the changes made (or, when it does not fit, tried and not made)
+/// and the pages measured last.
+fn fit_json(name: &str, paper: &str, fitted: &Fitted) -> serde_json::Value {
+    let step_json = |s: &Step| {
+        serde_json::json!({
+            "id": s.id,
+            "kind": s.kind,
+            "line": s.line,
+            "description": s.description,
+            "score": s.score,
+            "grade": s.grade,
+        })
+    };
+    let measured: serde_json::Map<String, serde_json::Value> = fitted
+        .measured
+        .iter()
+        .map(|(p, m)| {
+            (
+                p.clone(),
+                serde_json::json!({
+                    "pages": m.pages,
+                    "fits": m.fits(pages_allowed(&fitted.text, p)),
+                }),
+            )
+        })
+        .collect();
+    serde_json::json!({
+        "file": name,
+        "fit": paper,
+        "fits": fitted.stopped == Stopped::Fits,
+        "stopped": fitted.stopped.name(),
+        "last_resort": match &fitted.stopped {
+            Stopped::LastResort(s) => step_json(s),
+            _ => serde_json::Value::Null,
+        },
+        "steps": fitted.steps.iter().map(step_json).collect::<Vec<_>>(),
+        "measured": measured,
+    })
+}
+
+/// `shrink --apply`: fits the song, writes it where `output` says, lists
+/// each change made on stderr as `<file>:<line>: <description>`, and says
+/// how it ended (with `--json`, on stdout as JSON). A song it cannot fit is
+/// written as it was: the changes tried are listed, none is made.
+#[allow(clippy::too_many_arguments)]
+fn shrink_file(
+    file: &Path,
+    paper: &str,
+    last_resort: bool,
+    songbook: Option<&Path>,
+    package: Option<&Path>,
+    json: bool,
+    output: &Output,
+) -> Result<(), String> {
+    let text = fs::read_to_string(file)
+        .map_err(|e| format!("Failed to read file '{}': {}", file.display(), e))?;
+    let default_songbook = PathBuf::from("../ZubuvZpevnik");
+    let songbook = songbook.unwrap_or(&default_songbook);
+    let fitted = shrink_to_fit(
+        &text,
+        paper,
+        last_resort,
+        &mut |t: &str, papers: &[&str]| tex::measure::measure(songbook, package, t, papers),
+    )?;
+    let name = file.display().to_string();
+    let fits = fitted.stopped == Stopped::Fits;
+    // All or nothing: chords hidden without the song fitting cost the
+    // reader and buy nothing, so a song that still does not fit is left as
+    // it was, and what was tried is only listed.
+    for step in &fitted.steps {
+        let tried = if fits { "" } else { "tried, not made: " };
+        eprintln!("{}:{}: {}{}", name, step.line, tried, step.description);
+    }
+    let song = if fits { &fitted.text } else { &text };
+    write_back(file, song, fits && !fitted.steps.is_empty(), output)?;
+
+    let paper_name = paper.to_uppercase();
+    let changes = match fitted.steps.len() {
+        1 => "1 change".to_string(),
+        n => format!("{n} changes"),
+    };
+    if json {
+        let out = fit_json(&name, paper, &fitted);
+        return write_stdout(&format!("{out}\n"));
+    }
+    match &fitted.stopped {
+        Stopped::Fits if fitted.steps.is_empty() => {
+            eprintln!("It fits {paper_name} as it is.")
+        }
+        Stopped::Fits => eprintln!(
+            "It fits {paper_name} after {changes}. Record it in the songbook with:\n    zubuvzpevnik/scripts/checkpaper.py --measure {paper} --write <song>"
+        ),
+        Stopped::NothingLeft => eprintln!(
+            "Warning: it does not fit {paper_name} even after {changes}, and nothing is left to propose; the song is left as it was."
+        ),
+        Stopped::LastResort(s) => eprintln!(
+            "Warning: it does not fit {paper_name} without a last resort, even after {changes}; the song is left as it was. Next would be {}: {}. Allow it with --last-resort.",
+            s.id, s.description
+        ),
+    }
+    Ok(())
 }
 
 /// `join`'s kinds of part left as they are, with the reason.
@@ -912,6 +1274,7 @@ Usage:
   chords_converter convert <SOURCE> [--format FORMAT] [--tidy] [-o FILE | -o -]
   chords_converter tidy <SONG.tex> [-o FILE | -o -]
   chords_converter shrink <SONG.tex> [--fit a4|a5] [--measure] [--songbook DIR] [--package DIR] [--json]
+  chords_converter shrink <SONG.tex> --apply [--fit a4|a5] [--last-resort] [--songbook DIR] [--package DIR] [--json] [-o FILE | -o -]
   chords_converter join <SONG.tex> [--songbook DIR] [--package DIR] [--json]
   chords_converter check <SONG.tex> [--json]
   chords_converter apply <SONG.tex> --id ID [--id ID ...] [-o FILE | -o -]
@@ -944,6 +1307,15 @@ the song with the songbook's own checkpaper.py (the songbook is
 ../ZubuvZpevnik unless --songbook says otherwise; its package and scripts are
 its submodule zubuvzpevnik/, or the package --package names) and says
 whether it fits.
+shrink --apply fits the song itself: it takes the first proposal, tidies
+and measures the song again, until it fits the --fit paper (a5 unless
+given; A5 means A4 as well). Line-lengthening changes and joined lines are
+taken once typesetting shows no line too wide. It stops before a last
+resort (a smaller type, chords on the first part of a kind alone) unless
+--last-resort allows it. Once it fits, a change made unnecessary by a later
+one as readable is left out. A song it cannot fit is left as it was, and
+the changes tried are listed. Each change is listed on stderr as
+<file>:<line>: <description>; --json prints the outcome on stdout.
 join offers every two lines of each part of a kind joined into one, where
 every part of the kind can take it (an odd last line stays alone when every
 part has as many lines), after typesetting the joined song to check no line
@@ -985,6 +1357,17 @@ enum Command {
         songbook: Option<PathBuf>,
         package: Option<PathBuf>,
         json: bool,
+    },
+    /// `shrink --apply`: the first proposal taken, again and again, until
+    /// the song fits the paper.
+    Fit {
+        file: PathBuf,
+        paper: String,
+        last_resort: bool,
+        songbook: Option<PathBuf>,
+        package: Option<PathBuf>,
+        json: bool,
+        output: Output,
     },
     /// Corrections a person judges: a part that may be the chorus.
     Check {
@@ -1115,6 +1498,9 @@ fn parse_suggest(args: &[String]) -> Result<Command, String> {
     let mut songbook = None;
     let mut package = None;
     let mut json = false;
+    let mut apply = false;
+    let mut last_resort = false;
+    let mut output = None;
     let mut args = args.iter();
     while let Some(arg) = args.next() {
         let mut value = || {
@@ -1134,6 +1520,14 @@ fn parse_suggest(args: &[String]) -> Result<Command, String> {
             "--songbook" => songbook = Some(PathBuf::from(value()?)),
             "--package" => package = Some(PathBuf::from(value()?)),
             "--json" => json = true,
+            "--apply" => apply = true,
+            "--last-resort" => last_resort = true,
+            "--output" | "-o" => {
+                output = Some(match value()?.as_str() {
+                    "-" => Output::Stdout,
+                    path => Output::File(PathBuf::from(path)),
+                })
+            }
             option if option.starts_with('-') => {
                 return Err(format!("Unknown option '{}'.", option));
             }
@@ -1142,6 +1536,25 @@ fn parse_suggest(args: &[String]) -> Result<Command, String> {
         }
     }
     let file = file.ok_or_else(|| "A song file is needed.".to_string())?;
+    if apply {
+        let output = output.unwrap_or(Output::Default);
+        if json && output == Output::Stdout {
+            return Err("--json and -o - would both go to standard output.".to_string());
+        }
+        // Fitting needs to know when the song fits: it always measures.
+        return Ok(Command::Fit {
+            file,
+            paper: fit.unwrap_or_else(|| "a5".to_string()),
+            last_resort,
+            songbook,
+            package,
+            json,
+            output,
+        });
+    }
+    if last_resort || output.is_some() {
+        return Err("--last-resort and -o go with --apply.".to_string());
+    }
     Ok(Command::Suggest {
         file,
         fit,
@@ -1266,6 +1679,23 @@ async fn main() {
             package.as_deref(),
             json,
             Listing::Join,
+        ),
+        Command::Fit {
+            file,
+            paper,
+            last_resort,
+            songbook,
+            package,
+            json,
+            output,
+        } => shrink_file(
+            &file,
+            &paper,
+            last_resort,
+            songbook.as_deref(),
+            package.as_deref(),
+            json,
+            &output,
         ),
         Command::Check { file, json } => {
             list_proposals(&file, None, false, None, None, json, Listing::Check)
@@ -1469,6 +1899,32 @@ mod tests {
             })
         );
         assert!(parse_args(&args(&["suggest", "S.tex", "--fit", "letter"])).is_err());
+        assert_eq!(
+            parse_args(&args(&[
+                "shrink",
+                "S.tex",
+                "--apply",
+                "--last-resort",
+                "-o",
+                "-"
+            ])),
+            Ok(Command::Fit {
+                file: "S.tex".into(),
+                paper: "a5".into(),
+                last_resort: true,
+                songbook: None,
+                package: None,
+                json: false,
+                output: Output::Stdout,
+            })
+        );
+        assert!(matches!(
+            parse_args(&args(&["shrink", "S.tex", "--apply", "--fit", "a4"])),
+            Ok(Command::Fit { paper, .. }) if paper == "a4"
+        ));
+        assert!(parse_args(&args(&["shrink", "S.tex", "--apply", "--json", "-o", "-"])).is_err());
+        assert!(parse_args(&args(&["shrink", "S.tex", "--last-resort"])).is_err());
+        assert!(parse_args(&args(&["shrink", "S.tex", "-o", "x.tex"])).is_err());
         assert!(parse_args(&args(&["suggest"])).is_err());
         // shrink is the name now; suggest stays for older callers.
         assert_eq!(
@@ -1742,5 +2198,179 @@ mod tests {
                 "edits": [{"start": 60, "end": 60, "replacement": ","}],
             }])
         );
+    }
+
+    /// A song of three verses and three choruses, the last one longer,
+    /// made up for the tests: 38 printed lines, chord rows counted.
+    const PAPER_BOATS: &str = "\\beginsong{Paper Boats}[\n    by={Nobody},\n    lang={english},\n    pap={},\n]\n\n\\beginverse\n    \\[G]Paper boats are \\[C]sailing\n    \\[D]down the river \\[G]slow\n    \\[G]Paper boats are \\[C]failing\n    \\[D]where the waters \\[G]go\n\\endverse\n\n\\beginchorus\n    \\[C]Fold another \\[G]one\n    \\[D]fold it in the \\[G]sun\n\\endchorus\n\n\\beginverse\n    \\[G]Morning on the \\[C]water\n    \\[D]evening on the \\[G]shore\n    \\[G]Every little \\[C]daughter\n    \\[D]wants a boat once \\[G]more\n\\endverse\n\n\\beginchorus\n    \\[C]Fold another \\[G]one\n    \\[D]fold it in the \\[G]sun\n\\endchorus\n\n\\beginverse\n    \\[G]Lanterns on the \\[C]harbour\n    \\[D]lighting up the \\[G]bay\n    \\[G]Sailing ever \\[C]farther\n    \\[D]paper boats a\\[G]way\n\\endverse\n\n\\beginchorus\n    \\[C]Fold another \\[G]one\n    \\[D]fold it in the \\[G]sun\n    \\[C]fold another \\[G]one\n\\endchorus\n\n\\endsong\n";
+
+    /// Typesets nothing: a page holds `a4` or `a5` printed lines, a line of
+    /// words is one and its chord row another, unless the chords are off
+    /// there; a reminder is one line, a full reprint four, and the smaller
+    /// type on small paper takes a quarter off.
+    fn lines_per_page(
+        a4: usize,
+        a5: usize,
+    ) -> impl FnMut(&str, &[&str]) -> Result<BTreeMap<String, tex::measure::Measured>, String> {
+        move |text: &str, papers: &[&str]| {
+            let mut out = BTreeMap::new();
+            for paper in papers {
+                let small = *paper == "a5";
+                let switch_off = |code: &str| {
+                    code.contains("\\chordsoffonsmallpage") && small
+                        || code
+                            .split("\\chordsoff")
+                            .skip(1)
+                            .any(|rest| !rest.starts_with(|c: char| c.is_ascii_alphabetic()))
+                };
+                let mut weight = 0;
+                for part in tex::scan(text).parts {
+                    let mut off = switch_off(&text[part.opening_rest.clone()]);
+                    for line in text[part.body.clone()].lines().map(str::trim) {
+                        if line.is_empty() {
+                        } else if line.starts_with("\\chordson") && !line.contains("\\[") {
+                            off = false;
+                        } else if line.starts_with("\\chordsoff") {
+                            off = off || switch_off(line);
+                        } else {
+                            weight += 1 + usize::from(line.contains("\\[") && !off);
+                        }
+                    }
+                }
+                for line in text.lines().map(str::trim) {
+                    if line.starts_with("\\insertchorus*") {
+                        weight += 1;
+                    } else if line.starts_with("\\insertchorus") {
+                        weight += 4;
+                    }
+                }
+                if small && text.contains("\\smalleronsmallpage") {
+                    weight = weight * 3 / 4;
+                }
+                let lines = if small { a5 } else { a4 };
+                out.insert(
+                    paper.to_string(),
+                    tex::measure::Measured {
+                        pages: weight.div_ceil(lines).max(1) as u32,
+                        wraps: Vec::new(),
+                    },
+                );
+            }
+            Ok(out)
+        }
+    }
+
+    fn fit_paper_boats(paper: &str, last_resort: bool, a4: usize, a5: usize) -> Fitted {
+        shrink_to_fit(PAPER_BOATS, paper, last_resort, &mut lines_per_page(a4, a5)).unwrap()
+    }
+
+    fn kinds(fitted: &Fitted) -> Vec<&str> {
+        fitted.steps.iter().map(|s| s.kind).collect()
+    }
+
+    #[test]
+    fn a_song_that_fits_is_left_as_it_is() {
+        let fitted = fit_paper_boats("a5", false, 38, 38);
+        assert_eq!(fitted.stopped, Stopped::Fits);
+        assert!(fitted.steps.is_empty());
+        assert_eq!(fitted.text, PAPER_BOATS);
+    }
+
+    #[test]
+    fn a_song_fitting_a4_is_made_to_fit_a5_on_small_paper_alone() {
+        let fitted = fit_paper_boats("a5", false, 38, 36);
+        assert_eq!(fitted.stopped, Stopped::Fits);
+        assert_eq!(kinds(&fitted), ["chordsoffonsmallpageinside"]);
+        assert!(fitted.text.contains("    \\chordsoffonsmallpage\n"));
+        assert!(!fitted.text.contains("\\chordsoff\n"));
+    }
+
+    #[test]
+    fn a_song_overflowing_a4_takes_a_change_for_every_paper_first() {
+        let fitted = fit_paper_boats("a5", false, 35, 35);
+        assert_eq!(fitted.stopped, Stopped::Fits);
+        // Lines joined in pairs are the most readable change of all.
+        assert_eq!(kinds(&fitted), ["joinlines"]);
+        assert!(fitted.steps.iter().all(|s| !s.kind.contains("onsmallpage")));
+        let a4 = fit_paper_boats("a4", false, 35, 10);
+        assert_eq!(a4.stopped, Stopped::Fits);
+        assert_eq!(kinds(&a4), ["joinlines"]);
+    }
+
+    #[test]
+    fn it_stops_before_a_last_resort_unless_allowed() {
+        let fitted = fit_paper_boats("a5", false, 38, 10);
+        let Stopped::LastResort(next) = &fitted.stopped else {
+            panic!("{:?}", fitted.stopped);
+        };
+        assert_eq!(next.grade, "last resort");
+        assert!(!fitted.steps.is_empty());
+        assert!(!fitted.text.contains("\\smalleronsmallpage"));
+        assert!(fitted.steps.iter().all(|s| s.grade != "last resort"));
+
+        let allowed = shrink_to_fit(PAPER_BOATS, "a5", true, &mut lines_per_page(38, 10)).unwrap();
+        assert!(allowed.steps.len() > fitted.steps.len());
+        assert!(allowed.steps.iter().any(|s| s.grade == "last resort"));
+    }
+
+    #[test]
+    fn a_readable_change_is_not_given_back_for_a_smaller_type() {
+        // The smaller type alone would fit 20 lines of small paper here,
+        // but the chords hidden before it read better: they stay.
+        let fitted = shrink_to_fit(PAPER_BOATS, "a5", true, &mut lines_per_page(26, 20)).unwrap();
+        assert_eq!(fitted.stopped, Stopped::Fits);
+        let kinds = kinds(&fitted);
+        assert_eq!(kinds.last(), Some(&"smalleronsmallpage"));
+        assert!(kinds.len() > 2, "{kinds:?}");
+    }
+
+    #[test]
+    fn the_changes_made_again_make_the_same_song() {
+        let fitted = fit_paper_boats("a5", false, 26, 22);
+        assert!(fitted.steps.len() > 1);
+        let (again, made) = replay(PAPER_BOATS, &fitted.steps).unwrap().unwrap();
+        assert_eq!(again, fitted.text);
+        assert_eq!(made, fitted.steps);
+        // Without the first, the others are still found, on their lines.
+        assert!(replay(PAPER_BOATS, &fitted.steps[1..]).unwrap().is_some());
+    }
+
+    #[test]
+    fn the_fit_json_keeps_its_shape() {
+        // ZubuvZpevnikar reads it: a change here is a version bump.
+        let fitted = fit_paper_boats("a5", false, 38, 10);
+        let out = fit_json("S.tex", "a5", &fitted);
+        let keys = |v: &serde_json::Value| -> Vec<String> {
+            v.as_object().unwrap().keys().cloned().collect()
+        };
+        assert_eq!(
+            keys(&out),
+            [
+                "file",
+                "fit",
+                "fits",
+                "last_resort",
+                "measured",
+                "steps",
+                "stopped"
+            ]
+        );
+        assert_eq!(out["stopped"], "last_resort");
+        assert_eq!(out["fits"], false);
+        assert_eq!(
+            keys(&out["steps"][0]),
+            ["description", "grade", "id", "kind", "line", "score"]
+        );
+        assert_eq!(keys(&out["last_resort"]), keys(&out["steps"][0]));
+        assert_eq!(keys(&out["measured"]["a5"]), ["fits", "pages"]);
+    }
+
+    #[test]
+    fn fitting_twice_changes_nothing_more() {
+        let once = fit_paper_boats("a5", false, 38, 32);
+        assert_eq!(once.stopped, Stopped::Fits);
+        let twice = shrink_to_fit(&once.text, "a5", false, &mut lines_per_page(38, 32)).unwrap();
+        assert!(twice.steps.is_empty());
+        assert_eq!(twice.text, once.text);
     }
 }
