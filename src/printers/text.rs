@@ -140,7 +140,7 @@ and back again
 Over the hills we go
 
 [Chorus]
-N.C.     Am7/G
+N.C.    Am7/G
 Row the boat, row
 
 [Instrumental]

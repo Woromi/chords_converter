@@ -490,11 +490,11 @@ Key:   C
 Capo:  0
 
 [Verse]
-       C          G
+C                     G
 When we all go to the river and back
 
 R:
-       Am        G/B
+Am            G/B
 Row the boat, row away
 ```
 

@@ -11,7 +11,7 @@ use crate::models::{Chord, Line, Part, PartType, PlacedChord, Song};
 /// Capo:  0
 ///
 /// [Verse]
-///        C          G
+/// C                     G
 /// When we all go to the river and back
 /// ```
 ///
